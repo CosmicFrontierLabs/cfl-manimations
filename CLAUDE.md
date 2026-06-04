@@ -36,7 +36,8 @@ Output lands in `media/videos/<script>/<quality>/<SceneName>.mp4`.
 Some scenes use `MathTex`, so a LaTeX toolchain is required locally (and is installed
 in CI). On Debian/Ubuntu: `texlive texlive-latex-extra texlive-fonts-extra
 texlive-latex-recommended texlive-science texlive-fonts-recommended tipa`, plus
-`ffmpeg libcairo2-dev libpango1.0-dev`.
+`ffmpeg dvisvgm libcairo2-dev libpango1.0-dev` (manim shells out to `dvisvgm` to
+turn `MathTex` into SVG — it is NOT pulled in by the texlive meta-packages).
 
 ## Sharing / Serving Rendered Video
 Manim writes the `moov` atom (the file index) at the END of the `.mp4` by default. That

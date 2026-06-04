@@ -11,7 +11,7 @@ MONOCLE fine-guidance tracking, and the zodiacal plate solver.
 - A LaTeX toolchain (some scenes use `MathTex`) plus `ffmpeg`, `libcairo2-dev`,
   `libpango1.0-dev`. On Debian/Ubuntu:
   ```bash
-  sudo apt-get install ffmpeg libcairo2-dev libpango1.0-dev \
+  sudo apt-get install ffmpeg dvisvgm libcairo2-dev libpango1.0-dev \
     texlive texlive-latex-extra texlive-fonts-extra \
     texlive-latex-recommended texlive-science texlive-fonts-recommended tipa
   ```
