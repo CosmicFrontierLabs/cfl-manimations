@@ -1,0 +1,12 @@
+[project]
+name = "presentation-scripts"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "astropy>=6.0",
+    "healpy>=1.17.3",
+    "importlib-metadata>=8.7.0",
+    "manim>=0.19.0",
+]
