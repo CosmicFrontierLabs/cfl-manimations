@@ -1,0 +1,12 @@
+# Rendered output and manim scratch
+media/
+images/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.python-version.local
+
+# uv
+.uv/

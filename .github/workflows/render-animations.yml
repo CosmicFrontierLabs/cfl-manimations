@@ -1,0 +1,80 @@
+name: Render Animations
+
+# Smoke-test that every manim scene renders end-to-end at low quality.
+# This catches broken scenes, bad imports, and dependency drift without
+# the cost of producing production-quality video.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system dependencies (LaTeX, cairo, pango, ffmpeg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            dvisvgm \
+            libcairo2-dev \
+            libpango1.0-dev \
+            texlive \
+            texlive-latex-extra \
+            texlive-fonts-extra \
+            texlive-latex-recommended \
+            texlive-science \
+            texlive-fonts-recommended \
+            tipa
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Render all scenes (480p15 smoke test)
+        run: |
+          scenes=(
+            "pointing_error.py PointingErrorIntro"
+            "icp_animation.py ICPAnimation"
+            "icp_animation.py ICPWithNoise"
+            "monocle_tracking.py MonocleTracking"
+            "monocle_tracking.py MonocleStateFlow"
+            "zodiacal_solver.py ZodiacalSolver"
+          )
+          fail=0
+          for s in "${scenes[@]}"; do
+            echo "::group::Rendering $s"
+            if uv run manim -ql --disable_caching $s; then
+              echo "OK: $s"
+            else
+              echo "FAILED: $s"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "One or more scenes failed to render."
+            exit 1
+          fi
+
+      - name: Upload rendered videos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-animations
+          path: media/videos/**/*.mp4
+          if-no-files-found: warn
+          retention-days: 7
