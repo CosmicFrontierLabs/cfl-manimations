@@ -267,22 +267,30 @@ class ThermalControl(Scene):
     def clear_all(self):
         if self.mobjects:
             self.play(*[FadeOut(m) for m in self.mobjects], run_time=0.6)
+        self._cap = None
 
     def heading(self, text):
         h = label(text, 34, WHITE).to_edge(UP, buff=0.4)
         self.play(FadeIn(h, shift=DOWN * 0.2), run_time=0.6)
         return h
 
-    def caption(self, text, size=22, color=INK):
+    def caption(self, text, size=24, color=INK):
+        """One short line at the bottom. It replaces whatever caption is up,
+        so the screen never carries more than one sentence of prose."""
         c = label(text, size, color).to_edge(DOWN, buff=0.45)
-        self.play(FadeIn(c), run_time=0.5)
+        prev = getattr(self, "_cap", None)
+        anims = [FadeIn(c)]
+        if prev is not None and prev in self.mobjects:
+            anims.append(FadeOut(prev))
+        self.play(*anims, run_time=0.5)
+        self._cap = c
         return c
 
     # -- 0. title ----------------------------------------------------------
 
     def title_card(self):
         title = label("Heater control on the NSV-502", 44, WHITE)
-        sub = label("RTD → PI → windows → masks, one frame every 500 ms", 26, MUTED)
+        sub = label("one frame every 500 ms", 26, MUTED)
         sub.next_to(title, DOWN, buff=0.4)
         self.play(Write(title), run_time=1.2)
         self.play(FadeIn(sub), run_time=0.6)
@@ -310,7 +318,7 @@ class ThermalControl(Scene):
         bar_w = 8.0
         frame, frame_art = self.frame_bar(2.3, bar_w)
         self.play(Create(frame), FadeIn(frame_art[1:]), run_time=0.9)
-        cap = self.caption("The sweep divides every 500 ms frame into eight windows of 62.5 ms.")
+        cap = self.caption("Every 500 ms frame has eight 62.5 ms windows.")
         self.wait(1.2)
 
         # One heater line's mask, as eight cells aligned under the windows.
@@ -322,7 +330,7 @@ class ThermalControl(Scene):
         bits = label(f"0b{mask:08b}", 18, MUTED, font=MONO).next_to(strip, RIGHT, buff=0.35)
         self.play(FadeIn(strip), FadeIn(name), FadeIn(bits), run_time=0.6)
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("The line carries one 8-bit mask: bit p closes its switch for window p.")
+        cap = self.caption("One bit per window: set means switch closed.")
 
         def paint(m):
             return [Transform(cells[w], cells[w].copy().set_fill(ORANGE if (m >> w) & 1 else CELL, 1)) for w in range(FRAME_WINDOWS)]
@@ -378,7 +386,7 @@ class ThermalControl(Scene):
         wave = partial_wave(mask)
         self.add(head_line, wave)
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("Closed switch: 0.9 A flows. Open: nothing. There is no in-between on a line.")
+        cap = self.caption("Closed: 0.9 A. Open: nothing.")
         self.play(t_tr.animate.set_value(500), run_time=4.0, rate_func=rate_functions.linear)
         self.wait(0.6)
 
@@ -393,12 +401,12 @@ class ThermalControl(Scene):
         ).arrange(DOWN, aligned_edge=LEFT, buff=0.06).next_to(facts, DOWN, buff=0.25).align_to(facts, LEFT)
         self.play(Create(mean_line), FadeIn(mean_lab), run_time=0.6)
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption(f"Three of eight windows closed is {on_count / FRAME_WINDOWS * 100:g} % duty: the heat delivered is the average of the waveform.")
+        cap = self.caption(f"Three windows of eight: {on_count / FRAME_WINDOWS * 100:g} % duty.")
         self.wait(2.8)
 
         # A new mask is staged and latched at window 0.
         self.play(FadeOut(cap), FadeOut(mean_line), FadeOut(mean_lab), run_time=0.3)
-        cap = self.caption("A new mask can be staged any time; it takes effect at window 0 of the next frame.")
+        cap = self.caption("A new mask takes effect at window 0.")
         self.remove(wave)
         t_tr.set_value(0.0)
         wave = partial_wave(next_mask)
@@ -407,14 +415,14 @@ class ThermalControl(Scene):
         self.play(t_tr.animate.set_value(500), run_time=4.0, rate_func=rate_functions.linear)
         head_line.clear_updaters()
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("Masks are rewritten every frame, twice a second; one line alone can only ask for eighths.")
+        cap = self.caption("One line alone can only do eighths.")
         self.wait(2.5)
         self.clear_all()
 
     # -- 2. many channels: currents add -----------------------------------
 
     def section_currents(self):
-        head = self.heading("2. Many channels: currents add, so the budget becomes a count")
+        head = self.heading("2. Many channels: currents add")
         names = ["pwr1", "pwr11", "pwr15", "pwr9", "pwr12", "pwr14"]
         requests = [3, 2, 4, 1, 2, 3]
         budget_w = 40.0
@@ -439,7 +447,7 @@ class ThermalControl(Scene):
             yt.add(label(f"{amps:.1f} A", 14, MUTED).move_to(RIGHT * (col_x[0] - 0.75) + UP * (base_y + amps * amp_u)))
         stack_lab = label("supply current per window", 18, MUTED).next_to(baseline, DOWN, buff=0.55).align_to(baseline, LEFT)
         self.play(Create(baseline), FadeIn(yt), run_time=0.5)
-        cap = self.caption("Each closed switch adds 0.9 A to its window; the rail sees the sum, window by window.")
+        cap = self.caption("Each closed switch adds 0.9 A to its window.")
 
         heights = [0] * FRAME_WINDOWS
         blocks = VGroup()
@@ -478,15 +486,13 @@ class ThermalControl(Scene):
         over = [w for w in range(FRAME_WINDOWS) if heights[w] > cap_lines]
         self.play(*[Transform(totals[w], total_text(w)) for w in over], run_time=0.4)
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption(f"Everyone starting at window 0 piles {heights[0] * HEATER_A:.1f} A, {heights[0] * HEATER_W:.0f} W, into one window and leaves four empty.")
+        cap = self.caption(f"All starting at window 0: {heights[0] * HEATER_A:.1f} A, {heights[0] * HEATER_W:.0f} W, in one window.")
         self.wait(2.8)
-        self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("The loop knows every channel: 13 Ω on 11.7 V is 0.9 A and 10.6 W, measured, not assumed.")
+        cap = self.caption("The loop knows each channel: 13 Ω, 0.9 A, 10.6 W.")
         self.wait(2.5)
         self.play(FadeOut(cap), run_time=0.2)
-        rule = label(f"{budget_w:.0f} W ÷ {HEATER_W} W = {budget_w / HEATER_W:.2f}, rounded down: at most {cap_lines} lines in any window", 22, WHITE).move_to(UP * 0.05)
+        rule = label(f"{budget_w:.0f} W ÷ {HEATER_W} W = {budget_w / HEATER_W:.2f}  →  at most {cap_lines} lines per window", 22, WHITE).move_to(UP * 0.05)
         self.play(FadeIn(rule), run_time=0.5)
-        cap = self.caption("So a watt budget turns into a count the scheduler can enforce one window at a time.")
         self.wait(2.5)
 
         # Reflow under the cap: same windows per heater, spread across the frame.
@@ -498,12 +504,11 @@ class ThermalControl(Scene):
         for r in range(len(names)):
             anims += add_row(r, masks[r])
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption(f"Same 15 windows, same heat per frame, never more than {cap_lines} lines ({cap_lines * HEATER_W:.0f} W) in any window.")
+        cap = self.caption(f"Same windows, spread out: never above {cap_lines} lines.")
         self.play(*anims, run_time=1.2)
         self.wait(2.5)
-        self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("The module's own limit is 125 W, eleven lines; the budget here is the bench supply's, and the cap is how it is kept.")
-        self.wait(3.0)
+        cap = self.caption("Module limit 125 W; the bench supply sets 40 W.")
+        self.wait(2.5)
         self.clear_all()
 
     # -- 2. RTD -> PI --------------------------------------------------------
@@ -530,12 +535,12 @@ class ThermalControl(Scene):
         law = VGroup(
             label("duty = Kp·e + Ki·∫e dt", 26, WHITE),
             label("e = setpoint − RTD", 20, MUTED),
-            label("Kp = 100 % ÷ 5 °C window", 20, MUTED),
+            label("Kp = 20 % per °C", 20, MUTED),
             label("Ki = Kp ÷ 600 s", 20, MUTED),
         ).arrange(DOWN, aligned_edge=LEFT, buff=0.18)
         law.to_edge(RIGHT, buff=0.6).shift(UP * 1.9)
         self.play(FadeIn(law), run_time=0.7)
-        cap = self.caption("The window is the band where the P term alone spans 0 to 100 %; the integrator removes the standing error.")
+        cap = self.caption("P acts on the error; I removes what remains.")
         self.wait(2.5)
         self.play(FadeOut(cap), run_time=0.2)
 
@@ -561,18 +566,17 @@ class ThermalControl(Scene):
         curve = always_redraw(lambda: axes.plot_line_graph(t[: max(2, int(k_tr.get_value()))], temp[: max(2, int(k_tr.get_value()))], add_vertex_dots=False, line_color=GREEN, stroke_width=3))
         dot = always_redraw(lambda: axes.plot_line_graph([t[int(k_tr.get_value())]], [temp[int(k_tr.get_value())]], vertex_dot_radius=0.07, vertex_dot_style={"fill_color": GREEN}))
         self.add(curve, dot)
-        cap = self.caption("Far below the window the output rails at 100 %; the integrator is not advanced there.")
+        cap = self.caption("Far below setpoint: 100 %, integrator frozen.")
         n = len(t)
         self.play(k_tr.animate.set_value(int(n * 0.42)), run_time=5.0, rate_func=rate_functions.linear)
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("Inside the 5 °C window the P term falls away and the integrator carries the steady load.")
+        cap = self.caption("Inside the band the integrator carries the load.")
         self.play(k_tr.animate.set_value(n - 1), run_time=7.0, rate_func=rate_functions.linear)
         self.wait(1.0)
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("One PI per RTD group: every heater assigned to that RTD is handed the same duty.")
-        self.wait(2.5)
-        self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("Duty is a percentage; the frame only takes whole windows. The gap between them is the next section.")
+        cap = self.caption("One PI per RTD group.")
+        self.wait(2.0)
+        cap = self.caption("Duty is a percentage; frames take whole windows.")
         self.wait(2.5)
         self.clear_all()
 
@@ -596,12 +600,10 @@ class ThermalControl(Scene):
         duty = 30.0
 
         # -- A. the problem ------------------------------------------------
-        intro = VGroup(
-            label("the PI asks for 30 %   →   0.30 × 8 = 2.4 windows per frame", 26, WHITE),
-            label("a frame holds whole windows: 2 or 3, never 2.4", 22, MUTED),
-        ).arrange(DOWN, buff=0.15).next_to(head, DOWN, buff=0.35)
+        intro = label("30 % of 8 windows = 2.4 windows per frame", 26, WHITE).next_to(head, DOWN, buff=0.35)
         self.play(FadeIn(intro), run_time=0.6)
-        self.wait(1.2)
+        cap = self.caption("A frame holds 2 or 3, never 2.4.")
+        self.wait(1.5)
 
         # -- B. plain rounding is short forever --------------------------------
         q = label("Round to nearest?", 24, RED).move_to(UP * 1.3)
@@ -612,34 +614,25 @@ class ThermalControl(Scene):
             fl = label(f"frame {f + 1}", 16, MUTED).next_to(s, UP, buff=0.1)
             naive.add(VGroup(s, fl))
             self.play(FadeIn(naive[-1]), run_time=0.25)
-        tally = VGroup(
-            label("asked      5 × 2.4 = 12 windows", 22, INK),
-            label("delivered  5 × 2    = 10 windows  →  25 %, not 30 %", 22, RED),
-            label("the 0.4 lost each frame is never paid back: a 5 % bias, forever", 22, RED),
-        ).arrange(DOWN, aligned_edge=LEFT, buff=0.15).move_to(DOWN * 1.2)
-        for line in tally:
-            self.play(FadeIn(line), run_time=0.4)
-            self.wait(0.6)
-        self.wait(1.0)
+        tally = label("asked 12, delivered 10: 25 %, not 30 %", 24, RED).move_to(DOWN * 1.0)
+        self.play(FadeIn(tally), run_time=0.4)
+        self.wait(1.5)
+        cap = self.caption("The missing 0.4 per frame is never repaid.", color=RED)
+        self.wait(2.0)
         self.play(FadeOut(q), FadeOut(naive), FadeOut(tally), run_time=0.5)
 
         # -- C. the leftover, drawn as part of a window inside the strip ---------------
-        rule = label("carry the leftover part of a window into the next frame", 24, GREEN).move_to(UP * 1.75)
-        self.play(FadeIn(rule), run_time=0.5)
+        rule = label("carry the leftover into the next frame", 26, GREEN).move_to(UP * 1.75)
+        self.play(FadeIn(rule), FadeOut(cap), run_time=0.5)
         self.wait(0.8)
-        self.play(FadeOut(intro), rule.animate.next_to(head, DOWN, buff=0.25), run_time=0.5)
-        plain = VGroup(
-            label("every frame adds 2.4 windows to what the heater is owed", 18, MUTED),
-            label("whole windows switch on; the part of a window left over waits for the next frame", 18, MUTED),
-        ).arrange(DOWN, buff=0.05).next_to(rule, DOWN, buff=0.1)
-        self.play(FadeIn(plain), run_time=0.4)
+        self.play(FadeOut(intro), rule.animate.next_to(head, DOWN, buff=0.3), run_time=0.5)
 
         cw, ch, gap = 0.62, 0.34, 0.05
         pitch = cw + gap
         x0 = -4.3  # left edge of every strip
         legend = VGroup(
-            VGroup(Rectangle(width=0.3, height=0.2, fill_color=ORANGE, fill_opacity=1, stroke_width=0), label("window switched on", 14, INK)).arrange(RIGHT, buff=0.1),
-            VGroup(Rectangle(width=0.3, height=0.2, fill_color=PURPLE, fill_opacity=0.9, stroke_width=0), label("part of a window left over", 14, INK)).arrange(RIGHT, buff=0.1),
+            VGroup(Rectangle(width=0.3, height=0.2, fill_color=ORANGE, fill_opacity=1, stroke_width=0), label("on", 14, INK)).arrange(RIGHT, buff=0.1),
+            VGroup(Rectangle(width=0.3, height=0.2, fill_color=PURPLE, fill_opacity=0.9, stroke_width=0), label("left over", 14, INK)).arrange(RIGHT, buff=0.1),
         ).arrange(RIGHT, buff=0.5).move_to(UP * 1.4 + RIGHT * 0.3)
         self.play(FadeIn(legend), run_time=0.3)
 
@@ -679,44 +672,38 @@ class ThermalControl(Scene):
             fades = [FadeOut(fresh)] + ([FadeOut(carried)] if carried is not None else [])
             shows = [FadeIn(new_tail)] if new_tail is not None else []
             total += windows
-            words = VGroup(label(f"{windows} on", 18, ORANGE), label(f"{new_carry:.1f} of a window left over" if new_carry > 0 else "nothing left over", 16, PURPLE)).arrange(RIGHT, buff=0.25)
+            words = VGroup(label(f"{windows} on", 18, ORANGE), label(f"{new_carry:.1f} left" if new_carry > 0 else "0 left", 16, PURPLE)).arrange(RIGHT, buff=0.25)
             words.next_to(strip, RIGHT, buff=0.3)
             self.play(*snap, *fades, *shows, FadeIn(words), run_time=0.5)
             tail = new_tail
             if f == 1:
-                hint = label("0.4 + 2.4 = 2.8: still only two whole windows; 0.8 of a window waits", 16, PURPLE).to_edge(DOWN, buff=0.95)
-                self.play(FadeIn(hint), run_time=0.3)
+                cap = self.caption("2.8 owed: two on, 0.8 waits.", color=PURPLE)
                 self.wait(1.2)
-                self.play(FadeOut(hint), run_time=0.2)
             if f == 2:
-                hint = label("0.8 + 2.4 = 3.2: the leftover completes a window, so three switch on; 0.2 waits", 16, PURPLE).to_edge(DOWN, buff=0.95)
-                self.play(FadeIn(hint), run_time=0.3)
+                cap = self.caption("3.2 owed: three on, 0.2 waits.", color=PURPLE)
                 self.wait(1.4)
-                self.play(FadeOut(hint), run_time=0.2)
             carry = new_carry
         self.wait(0.6)
-        inv = label("the leftover is never a whole window: the moment it would be, that window switches on", 20, GREEN).to_edge(DOWN, buff=0.95)
-        avg = label(f"after 5 frames: 12 windows on for 12.0 asked, exactly 30 %; after 6: {total} for 14.4", 20, INK).to_edge(DOWN, buff=0.45)
-        self.play(FadeIn(inv), run_time=0.5)
-        self.wait(1.5)
-        self.play(FadeIn(avg), run_time=0.5)
+        cap = self.caption("The leftover is never a whole window.", color=GREEN)
+        self.wait(2.0)
+        cap = self.caption("Five frames: 12 on for 12.0 asked. Exactly 30 %.")
         self.wait(2.5)
         self.play(*[FadeOut(m) for m in self.mobjects if m is not head], run_time=0.5)
+        self._cap = None
 
-        # -- D. the rules that keep it bounded -------------------------------------
-        rules = VGroup(
-            VGroup(label("one ledger per heater line", 24, WHITE), label("one PI per RTD group hands every heater the same 2.4; each keeps its own fraction", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
-            VGroup(label("the ledger only remembers part of a window", 24, WHITE), label("it is always less than one whole window, so it can never build up into a surge", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
-            VGroup(label("what a frame cannot hold is forgotten, not banked", 24, WHITE), label("at 100 % nothing is owed; windows the scheduler clips go to the PI (section 6), not here", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
-        ).arrange(DOWN, aligned_edge=LEFT, buff=0.45).next_to(head, DOWN, buff=0.5).to_edge(LEFT, buff=0.7)
-        for r in rules:
-            self.play(FadeIn(r, shift=RIGHT * 0.2), run_time=0.5)
-            self.wait(1.8)
-        self.wait(0.6)
-        self.play(FadeOut(rules), run_time=0.4)
+        # -- D. the rules that keep it bounded, one line at a time --------------------
+        for line in (
+            "One ledger per heater line.",
+            "It only ever holds part of a window.",
+            "Clipped windows are not banked; the PI handles those.",
+        ):
+            rule_line = label(line, 30, WHITE).move_to(UP * 0.3)
+            self.play(FadeIn(rule_line, shift=UP * 0.1), run_time=0.5)
+            self.wait(2.0)
+            self.play(FadeOut(rule_line), run_time=0.3)
 
         # -- E. a low duty still gets delivered ----------------------------------------
-        low = label("10 % asks for 0.8 windows per frame: less than one", 24, WHITE).next_to(head, DOWN, buff=0.4)
+        low = label("10 %: 0.8 windows per frame", 26, WHITE).next_to(head, DOWN, buff=0.4)
         self.play(FadeIn(low), run_time=0.5)
         carry, got = 0.0, []
         strips = VGroup()
@@ -730,12 +717,12 @@ class ThermalControl(Scene):
             strips.add(VGroup(s, fl))
             ledger.add(c)
             self.play(FadeIn(strips[-1]), FadeIn(c), run_time=0.22)
-        lab = label("part of a window left over after each frame", 16, PURPLE).next_to(ledger, DOWN, buff=0.15)
-        result = label(f"{sum(got)} windows in 10 frames = {sum(got) / 10:g} per frame = {sum(got) / 80 * 100:g} %", 24, GREEN).move_to(DOWN * 1.4)
+        lab = label("left over", 16, PURPLE).next_to(ledger, DOWN, buff=0.15)
+        result = label(f"{sum(got)} windows in 10 frames: {sum(got) / 80 * 100:g} %", 26, GREEN).move_to(DOWN * 1.4)
         self.play(FadeIn(lab), run_time=0.3)
         self.play(FadeIn(result), run_time=0.5)
-        cap = self.caption("Every duty the PI can name is delivered on average; only the timing is quantised to the frame.", 22, INK)
-        self.wait(3.0)
+        cap = self.caption("Any duty is delivered on average.")
+        self.wait(2.5)
         self.clear_all()
 
     # -- 4. scheduling under a cap ------------------------------------------
@@ -745,10 +732,7 @@ class ThermalControl(Scene):
         names = ["pwr1", "pwr11", "pwr15", "pwr9", "pwr12", "pwr14"]
         requests = [3, 2, 4, 1, 2, 3]
         cap = 3
-        note = VGroup(
-            label(f"the cap from section 2: 3 lines in any window (40 W ÷ {HEATER_W} W per heater)", 24, WHITE),
-            label("each round, every heater still owed a window takes the least-loaded free one", 20, MUTED),
-        ).arrange(DOWN, buff=0.12).next_to(head, DOWN, buff=0.3)
+        note = label("at most 3 lines in any window", 24, WHITE).next_to(head, DOWN, buff=0.3)
         self.play(FadeIn(note), run_time=0.6)
 
         grid = cell_grid(len(names), FRAME_WINDOWS, w=0.6, h=0.42, gap=0.06)
@@ -762,12 +746,12 @@ class ThermalControl(Scene):
         self.play(FadeIn(g), FadeIn(rowlab), FadeIn(asked), FadeIn(wlab), FadeIn(load_txt), FadeIn(load_lab), run_time=0.7)
 
         masks, granted, placements = schedule_frame(requests, cap, rotate=0)
-        pre = self.caption("The counts on the right came from each heater's ledger; the scheduler only decides where they land.", 20, INK)
+        pre = self.caption("The ledger sets the counts; the scheduler picks windows.")
         self.wait(2.5)
-        self.play(FadeOut(pre), run_time=0.2)
-        pre = self.caption("Heaters owed the most go first; ties break on a start index that rotates every frame.", 20, INK)
+        pre = self.caption("Most owed goes first; ties rotate each frame.")
         self.wait(2.0)
         self.play(FadeOut(pre), run_time=0.2)
+        self._cap = None
         round_lab = label("round 1", 22, TEAL).to_edge(DOWN, buff=0.5)
         self.play(FadeIn(round_lab), run_time=0.3)
         seen = set()
@@ -788,10 +772,9 @@ class ThermalControl(Scene):
             )
         self.wait(0.5)
         self.play(FadeOut(round_lab), run_time=0.2)
-        cap_txt = self.caption("15 windows placed, no window above 3 lines, no heater owed a window it did not get.", 22, GREEN)
-        self.wait(1.2)
-        self.play(FadeOut(cap_txt), run_time=0.2)
-        cap_txt = self.caption("Next frame the rotation index advances, so the same demand lands on different windows.", 22, INK)
+        cap_txt = self.caption("15 placed, none above 3.", color=GREEN)
+        self.wait(1.5)
+        cap_txt = self.caption("Next frame the rotation moves them.")
         masks2, _, _ = schedule_frame(requests, cap, rotate=3)
         anims = []
         for r in range(len(names)):
@@ -802,11 +785,9 @@ class ThermalControl(Scene):
             anims.append(Transform(load_txt[w], label(str(counts[w]), 20, ORANGE if counts[w] < cap else RED).move_to(load_txt[w])))
         self.play(*anims, run_time=0.8)
         self.wait(2.0)
-        self.play(FadeOut(cap_txt), run_time=0.2)
-        cap_txt = self.caption("Rotation spreads switching wear and keeps the supply load flat across the frame.", 20, INK)
+        cap_txt = self.caption("Spreads wear, flattens the load.")
         self.wait(2.0)
-        self.play(FadeOut(cap_txt), run_time=0.2)
-        cap_txt = self.caption("If the cap cannot fit every request, some heaters get fewer windows than asked: the frame is clipped.", 20, INK)
+        cap_txt = self.caption("If it cannot fit everything: clipped.")
         self.wait(2.5)
         self.clear_all()
 
@@ -825,10 +806,7 @@ class ThermalControl(Scene):
         hold = simulate(setpoint, kp, ki, minutes, cap_pct=cap, hold_when_clipped=True)
         wind = simulate(setpoint, kp, ki, minutes, cap_pct=cap, hold_when_clipped=False)
 
-        intro = VGroup(
-            label("a group at setpoint loses most of the budget to a cold group for 30 min", 24, WHITE),
-            label("granted < requested  →  the frame is marked clipped", 20, MUTED),
-        ).arrange(DOWN, buff=0.12).next_to(head, DOWN, buff=0.25)
+        intro = label("a cold group takes the budget for 30 min", 24, WHITE).next_to(head, DOWN, buff=0.25)
         self.play(FadeIn(intro), run_time=0.6)
 
         axis_cfg = {"include_numbers": True, "font_size": 18, "color": MUTED, "label_constructor": ui_text, "decimal_number_config": {"num_decimal_places": 0}}
@@ -862,35 +840,25 @@ class ThermalControl(Scene):
         wind_i = partial(ax_i, wind_plot, RED, 4, ki)
         hold_i = partial(ax_i, hold_plot, GREEN, 4, ki)
         legend = VGroup(
-            VGroup(Line(ORIGIN, RIGHT * 0.5, color=RED, stroke_width=4), label("integrate anyway: counts error the heater was never allowed to act on", 18, INK)).arrange(RIGHT, buff=0.15),
-            VGroup(Line(ORIGIN, RIGHT * 0.5, color=GREEN, stroke_width=4), label("hold while clipped and still below setpoint", 18, INK)).arrange(RIGHT, buff=0.15),
+            VGroup(Line(ORIGIN, RIGHT * 0.5, color=RED, stroke_width=4), label("integrate anyway", 18, INK)).arrange(RIGHT, buff=0.15),
+            VGroup(Line(ORIGIN, RIGHT * 0.5, color=GREEN, stroke_width=4), label("hold while clipped", 18, INK)).arrange(RIGHT, buff=0.15),
         ).arrange(DOWN, aligned_edge=LEFT, buff=0.1).to_edge(DOWN, buff=0.35)
         self.add(wind_t, hold_t, wind_i, hold_i)
         self.play(FadeIn(legend), run_time=0.4)
         n = len(hold_plot)
         self.play(k_tr.animate.set_value(n - 1), run_time=9.0, rate_func=rate_functions.linear)
         lift = int(squeeze[1] * 60 / 0.5)
-        verdict = label(
-            f"at the lift the integral term is {ki * hold[lift, 4]:.0f} % held vs {ki * wind[lift, 4]:.0f} % wound; "
-            f"the held loop resumes from the real steady load",
-            20, WHITE).next_to(intro, DOWN, buff=0.12)
-        self.play(FadeIn(verdict), run_time=0.5)
+        self.play(FadeOut(legend), run_time=0.3)
+        cap = self.caption(f"At the lift: {ki * hold[lift, 4]:.0f} % held vs {ki * wind[lift, 4]:.0f} % wound.")
         self.wait(2.5)
-        self.play(*[FadeOut(m) for m in self.mobjects if m is not head], run_time=0.5)
-
-        # Why the clipped windows are not put on the ledger.
-        why = VGroup(
-            label("Why not put the clipped windows on the ledger?", 26, WHITE),
-            label("the ledger is bounded below one window on purpose: that is what makes it safe", 20, MUTED),
-            label("a clipped frame can be short by whole windows, every frame, as long as the squeeze lasts", 20, MUTED),
-            label("banking that is a second, unbounded integrator, repaid all at once when the budget frees", 20, MUTED),
-            label("so the shortfall goes to the PI: its integrator holds while clipped and below setpoint", 20, GREEN),
-            label("the ledger keeps fractions; the PI keeps the long-term deficit; neither can run away", 22, WHITE),
-        ).arrange(DOWN, buff=0.28).next_to(head, DOWN, buff=0.5)
-        for line in why:
-            self.play(FadeIn(line, shift=UP * 0.1), run_time=0.45)
-            self.wait(1.4)
-        self.wait(1.0)
+        # Why the clipped windows are not put on the ledger: one line at a time,
+        # over the plots.
+        cap = self.caption("Why not bank clipped windows in the ledger?")
+        self.wait(2.0)
+        cap = self.caption("That would be a second, unbounded integrator.")
+        self.wait(2.0)
+        cap = self.caption("So the PI holds instead; nothing can run away.", color=GREEN)
+        self.wait(2.5)
         self.clear_all()
 
     # -- 6. the loop --------------------------------------------------------
@@ -925,22 +893,17 @@ class ThermalControl(Scene):
         fb_arrow = DashedLine(boxes[3].get_corner(UP + LEFT) + RIGHT * 0.3, boxes[1].get_corner(DOWN + RIGHT) + LEFT * 0.3, color=RED, stroke_width=2).add_tip(tip_length=0.2)
         feedback = label("clipped last frame?", 18, RED).next_to(fb_arrow.get_center(), RIGHT, buff=0.35)
         self.play(Create(fb_arrow), FadeIn(feedback), run_time=0.7)
-        cap = self.caption("Two frames a second; the deficit lives in the carry, the integrator pauses under the cap.", 22, INK)
+        cap = self.caption("Two frames a second.")
         for _ in range(2):
             for i in range(6):
                 self.play(Indicate(boxes[i][0], color=steps[i][2], scale_factor=1.05), run_time=0.3)
         self.wait(1.0)
-        self.play(FadeOut(cap), run_time=0.2)
 
-        # One heater, one frame, with real numbers.
-        worked = VGroup(
-            label("pwr11 on rtd9, one frame:", 18, WHITE),
-            label("RTD 44.6 °C → e = 0.4 °C → duty = 20·0.4 + I ≈ 18 %", 18, INK),
-            label("0.18 × 8 = 1.44 windows + ledger 0.60 = 2.04 → 2 granted, 0.04 carried", 18, PURPLE),
-            label("scheduler puts them in the two emptiest windows → mask 0b00100001", 18, ORANGE),
-        ).arrange(DOWN, aligned_edge=LEFT, buff=0.08).to_edge(DOWN, buff=0.3).to_edge(LEFT, buff=0.7)
-        for line in worked:
-            self.play(FadeIn(line), run_time=0.4)
-            self.wait(1.2)
-        self.wait(1.5)
+        # One heater, one frame, with real numbers, one line at a time.
+        cap = self.caption("pwr11: RTD 44.6 °C, error 0.4 °C, duty 18 %.", color=BLUE)
+        self.wait(2.2)
+        cap = self.caption("1.44 windows + 0.60 left over: 2 on, 0.04 left.", color=PURPLE)
+        self.wait(2.2)
+        cap = self.caption("Two emptiest windows → mask 0b00100001.", color=ORANGE)
+        self.wait(2.5)
         self.clear_all()
