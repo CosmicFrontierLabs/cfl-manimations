@@ -90,6 +90,32 @@ the geometric hash code, and the kd-tree nearest-neighbour match.
 uv run manim -pql zodiacal_solver.py ZodiacalSolver
 ```
 
+### NSV-502 Heater Control (`thermal_control.py`)
+
+Walks the window-mask heater loop that `pm_mask_loop` runs on the NSV-502 personality
+module, in the order the data flows every 500 ms frame:
+
+1. The frame: eight 62.5 ms windows, one mask bit per window per heater line, staged any
+   time and latched at window 0.
+2. RTD to PI: temperature error to duty percentage, with conditional integration at the rails.
+3. Duty to windows with carry: the fraction of a window a heater is owed is carried into
+   the next frame, so 30 % really is 2.4 windows on average and the deficit stays below one window.
+4. Scheduling under a power cap: whole windows placed round-robin into the least-loaded
+   window, never above the cap of lines per window, rotated frame to frame.
+5. Clipping and integrator pause: when the cap grants less than asked, the integrator holds
+   instead of counting error the heater was never allowed to act on.
+6. The closed loop.
+
+The control math is a direct port of the `heater-schedule` crate in `tracking-test-bench`,
+so the numbers on screen are the ones the hardware loop produces. No LaTeX is needed for
+this scene.
+
+- `ThermalControl` — the full walkthrough (about 90 s)
+
+```bash
+uv run manim -pql thermal_control.py ThermalControl
+```
+
 ## Supporting Scripts (not manim scenes)
 
 - `icp_core.py` — ICP algorithm implementation used by `icp_animation.py`.

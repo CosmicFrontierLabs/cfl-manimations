@@ -53,6 +53,7 @@ jobs:
             "monocle_tracking.py MonocleTracking"
             "monocle_tracking.py MonocleStateFlow"
             "zodiacal_solver.py ZodiacalSolver"
+            "thermal_control.py ThermalControl"
           )
           fail=0
           for s in "${scenes[@]}"; do

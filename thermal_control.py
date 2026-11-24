@@ -1,0 +1,599 @@
+#!/usr/bin/env python3
+"""
+Window-mask heater control on the NSV-502, as run by pm_mask_loop.
+
+The scene walks the loop in the order the data flows every 500 ms frame:
+
+1. The frame: eight 62.5 ms windows, one mask bit per window per heater line,
+   staged any time and latched at window 0.
+2. RTD to PI: a proportional-integral law turns the temperature error into a
+   duty percentage, with conditional integration at the rails.
+3. Duty to windows with carry: the fraction of a window a heater is owed but
+   not granted is carried into the next frame, so a duty between two eighths
+   is delivered on average and the deficit never reaches a whole window.
+4. Scheduling under a power cap: whole windows are placed round-robin into
+   the least-loaded window, never exceeding the cap of lines per window.
+5. Clipping and integrator pause: when the cap grants fewer windows than
+   asked, the integrator is held rather than wound up.
+6. The closed loop.
+
+The control math here is a direct port of the heater-schedule crate in
+tracking-test-bench (windows_with_carry, schedule_frame, pi_duty,
+pi_duty_under_budget), so the numbers on screen are the ones the hardware
+loop would produce.
+"""
+
+import math
+
+import numpy as np
+from manim import (
+    BLACK,
+    DOWN,
+    GREY,
+    LEFT,
+    ORIGIN,
+    RIGHT,
+    UP,
+    WHITE,
+    Arrow,
+    Axes,
+    Create,
+    DashedLine,
+    DecimalNumber,
+    FadeIn,
+    FadeOut,
+    Indicate,
+    Line,
+    Rectangle,
+    RoundedRectangle,
+    Scene,
+    Text,
+    Transform,
+    ValueTracker,
+    VGroup,
+    Write,
+    always_redraw,
+    rate_functions,
+)
+
+# Palette shared with the tracking-test-bench dashboards.
+BLUE = "#7aa2f7"
+GREEN = "#9ece6a"
+RED = "#f7768e"
+ORANGE = "#e0af68"
+PURPLE = "#bb9af7"
+TEAL = "#7dcfff"
+INK = "#c0caf5"
+MUTED = "#565f89"
+CELL = "#262838"
+
+FRAME_WINDOWS = 8
+WINDOW_MS = 62.5
+HEATER_W = 10.6
+
+
+# --------------------------------------------------------------------------
+# Control law, ported from heater-schedule/src/lib.rs
+# --------------------------------------------------------------------------
+
+
+def pi_duty(error_c, kp, ki, integrator, dt_s):
+    """One PI step. Returns (duty_pct, integrator).
+
+    The integrator only keeps a step that does not push an already saturated
+    output further into its rail (conditional integration)."""
+    proportional = kp * error_c
+    stepped = integrator + error_c * dt_s
+    unclamped = proportional + ki * stepped
+    if (unclamped > 100.0 and error_c > 0.0) or (unclamped < 0.0 and error_c < 0.0):
+        integrator = integrator
+    else:
+        integrator = stepped
+    duty = min(100.0, max(0.0, proportional + ki * integrator))
+    return duty, integrator
+
+
+def pi_duty_under_budget(error_c, kp, ki, integrator, dt_s, clipped_last_frame):
+    """PI step that holds the integrator while the scheduler is clipping and
+    the heater still wants more: the plant is not seeing the commanded duty, so
+    accumulating the error would only wind up."""
+    duty, new_integrator = pi_duty(error_c, kp, ki, integrator, dt_s)
+    if clipped_last_frame and error_c > 0.0:
+        return duty, integrator
+    return duty, new_integrator
+
+
+def windows_with_carry(duty_pct, carry):
+    """Whole windows to request this frame, and the fraction to carry."""
+    # Snap binary-float noise so that 2.4 + 0.6 floors to 3 like the 3.0 it is.
+    owed = round(duty_pct / 100.0 * FRAME_WINDOWS + carry, 9)
+    windows = min(int(math.floor(owed)), FRAME_WINDOWS)
+    if duty_pct >= 100.0:
+        remainder = 0.0
+    else:
+        remainder = min(max(owed - windows, 0.0), 1.0 - 1e-12)
+    return windows, remainder
+
+
+def schedule_frame(requests, cap, rotate):
+    """Place each heater's requested windows, round-robin, into the least
+    loaded window that still has room under the cap. Returns the placement
+    order as (heater, window) pairs plus the granted count per heater."""
+    n = len(requests)
+    requested = [min(r, FRAME_WINDOWS) for r in requests]
+    masks = [0] * n
+    granted = [0] * n
+    load = [0] * FRAME_WINDOWS
+    placements = []
+    for _round in range(FRAME_WINDOWS):
+        order = sorted(range(n), key=lambda i: (-(requested[i] - granted[i]), (i + rotate) % max(n, 1)))
+        progressed = False
+        for i in order:
+            if granted[i] >= requested[i]:
+                continue
+            free = [w for w in range(FRAME_WINDOWS) if load[w] < cap and not (masks[i] >> w) & 1]
+            if not free:
+                continue
+            w = min(free, key=lambda w: (load[w], (w + rotate) % FRAME_WINDOWS))
+            masks[i] |= 1 << w
+            load[w] += 1
+            granted[i] += 1
+            placements.append((i, w))
+            progressed = True
+        if not progressed:
+            break
+    return masks, granted, placements
+
+
+# --------------------------------------------------------------------------
+# A small first-order plant so the PI section has real dynamics to show
+# --------------------------------------------------------------------------
+
+
+def simulate(setpoint_c, kp, ki, minutes, cap_pct=None, hold_when_clipped=True, dt_s=0.5):
+    """Heat a lump from room temperature. 100 % duty heats at 2 K/min; the
+    lump loses heat with a 20 min time constant. `cap_pct(t_min)` models the
+    scheduler granting less than the PI asked for while other groups hold the
+    budget."""
+    t_amb = 23.0
+    rate_k_per_s = 2.0 / 60.0
+    tau_s = 20.0 * 60.0
+    steps = int(minutes * 60 / dt_s)
+    temp = t_amb
+    integrator = 0.0
+    clipped = False
+    out = np.zeros((steps, 5))  # t_min, temp, duty_asked, duty_granted, integrator
+    for k in range(steps):
+        error = setpoint_c - temp
+        if hold_when_clipped:
+            duty, integrator = pi_duty_under_budget(error, kp, ki, integrator, dt_s, clipped)
+        else:
+            duty, integrator = pi_duty(error, kp, ki, integrator, dt_s)
+        granted = min(duty, cap_pct(k * dt_s / 60.0) if cap_pct else 100.0)
+        clipped = granted < duty - 1e-9
+        out[k] = (k * dt_s / 60.0, temp, duty, granted, integrator)
+        temp += dt_s * (rate_k_per_s * granted / 100.0 - (temp - t_amb) / tau_s)
+    return out
+
+
+# --------------------------------------------------------------------------
+# Drawing helpers
+# --------------------------------------------------------------------------
+
+
+def label(text, size=24, color=INK, **kw):
+    return Text(text, font_size=size, color=color, **kw)
+
+
+def cell_grid(rows, cols, w=0.55, h=0.42, gap=0.06):
+    """A rows x cols grid of rectangles; index as grid[r][c]."""
+    grid = []
+    for r in range(rows):
+        row = []
+        for c in range(cols):
+            cell = Rectangle(width=w, height=h, stroke_width=1, stroke_color=MUTED, fill_color=CELL, fill_opacity=1)
+            cell.move_to(RIGHT * c * (w + gap) + DOWN * r * (h + gap))
+            row.append(cell)
+        grid.append(row)
+    return grid
+
+
+def grid_group(grid):
+    return VGroup(*[cell for row in grid for cell in row])
+
+
+def bar(value, max_value, length, height, color, anchor_left):
+    """A horizontal bar growing to the right from anchor_left."""
+    width = max(1e-3, length * value / max_value)
+    rect = Rectangle(width=width, height=height, fill_color=color, fill_opacity=0.9, stroke_width=0)
+    rect.move_to(anchor_left, aligned_edge=LEFT)
+    return rect
+
+
+# --------------------------------------------------------------------------
+# The scene
+# --------------------------------------------------------------------------
+
+
+class ThermalControl(Scene):
+    def construct(self):
+        self.camera.background_color = BLACK
+        self.title_card()
+        self.section_frame()
+        self.section_pi()
+        self.section_carry()
+        self.section_schedule()
+        self.section_clip()
+        self.section_loop()
+
+    # -- helpers -----------------------------------------------------------
+
+    def clear_all(self):
+        if self.mobjects:
+            self.play(*[FadeOut(m) for m in self.mobjects], run_time=0.6)
+
+    def heading(self, text):
+        h = label(text, 34, WHITE).to_edge(UP, buff=0.4)
+        self.play(FadeIn(h, shift=DOWN * 0.2), run_time=0.6)
+        return h
+
+    def caption(self, text, size=22, color=INK):
+        c = label(text, size, color).to_edge(DOWN, buff=0.45)
+        self.play(FadeIn(c), run_time=0.5)
+        return c
+
+    # -- 0. title ----------------------------------------------------------
+
+    def title_card(self):
+        title = label("Heater control on the NSV-502", 44, WHITE)
+        sub = label("RTD → PI → windows → masks, one frame every 500 ms", 26, MUTED)
+        sub.next_to(title, DOWN, buff=0.4)
+        self.play(Write(title), run_time=1.2)
+        self.play(FadeIn(sub), run_time=0.6)
+        self.wait(1.4)
+        self.clear_all()
+
+    # -- 1. the frame ------------------------------------------------------
+
+    def section_frame(self):
+        head = self.heading("1. The frame: eight windows of 62.5 ms")
+
+        # The frame bar.
+        bar_w, bar_h = 8.0, 0.7
+        frame = Rectangle(width=bar_w, height=bar_h, stroke_color=INK, stroke_width=2).shift(UP * 1.6)
+        ticks = VGroup()
+        wlabels = VGroup()
+        for w in range(FRAME_WINDOWS):
+            x = frame.get_left()[0] + w * bar_w / FRAME_WINDOWS
+            if w:
+                ticks.add(Line(frame.get_top() * [0, 1, 0] + RIGHT * x, frame.get_bottom() * [0, 1, 0] + RIGHT * x, stroke_color=MUTED, stroke_width=1))
+            wlabels.add(label(f"w{w}", 20, MUTED).move_to(RIGHT * (x + bar_w / FRAME_WINDOWS / 2) + UP * (frame.get_top()[1] + 0.3)))
+        span = label("500 ms frame", 22, INK).next_to(frame, LEFT, buff=0.3)
+        self.play(Create(frame), FadeIn(span), run_time=0.8)
+        self.play(FadeIn(ticks), FadeIn(wlabels), run_time=0.6)
+
+        # Heater mask rows under the frame.
+        names = ["pwr1", "pwr11", "pwr15", "pwr9"]
+        masks = [0b00100101, 0b10010010, 0b00000000, 0b11111111]
+        next_masks = [0b01001010, 0b00100100, 0b00000001, 0b11111111]
+        grid = cell_grid(len(names), FRAME_WINDOWS, w=bar_w / FRAME_WINDOWS - 0.06, h=0.42)
+        g = grid_group(grid)
+        g.move_to(frame.get_center() + DOWN * 1.9)
+        g.align_to(frame, LEFT).shift(RIGHT * 0.03)
+        rows = VGroup()
+        bits = VGroup()
+        for r, name in enumerate(names):
+            rows.add(label(name, 20, INK).next_to(grid[r][0], LEFT, buff=0.35))
+            bits.add(label(f"0b{masks[r]:08b}", 18, MUTED, font="monospace").next_to(grid[r][-1], RIGHT, buff=0.35))
+        self.play(FadeIn(g), FadeIn(rows), run_time=0.7)
+        cap = self.caption("Each heater line carries one 8-bit mask: bit p means on during window p.")
+        self.play(FadeIn(bits), run_time=0.5)
+
+        def paint(mask_list, animate=True):
+            anims = []
+            for r, m in enumerate(mask_list):
+                for w in range(FRAME_WINDOWS):
+                    on = (m >> w) & 1
+                    target = grid[r][w].copy().set_fill(ORANGE if on else CELL, 1)
+                    anims.append(Transform(grid[r][w], target))
+            return anims
+
+        self.play(*paint(masks), run_time=0.8)
+        self.wait(0.6)
+
+        # Playhead sweeping two frames; the staged mask latches at window 0.
+        head_line = Rectangle(width=0.06, height=bar_h + 2.9, fill_color=TEAL, fill_opacity=0.8, stroke_width=0)
+        head_line.move_to(frame.get_left() + DOWN * 1.1, aligned_edge=LEFT)
+        pos = ValueTracker(0.0)
+        head_line.add_updater(lambda m: m.move_to(frame.get_left() + RIGHT * pos.get_value() * bar_w + DOWN * 1.1, aligned_edge=LEFT))
+        self.add(head_line)
+        self.play(pos.animate.set_value(1.0), run_time=2.5, rate_func=rate_functions.linear)
+        self.play(FadeOut(cap), run_time=0.2)
+        cap = self.caption("A new mask can be staged any time; it is latched at window 0 of the next frame.")
+        new_bits = VGroup(*[label(f"0b{next_masks[r]:08b}", 18, GREEN, font="monospace").move_to(bits[r]) for r in range(len(names))])
+        self.play(Transform(bits, new_bits), run_time=0.5)
+        pos.set_value(0.0)
+        self.play(*paint(next_masks), run_time=0.3)
+        self.play(pos.animate.set_value(1.0), run_time=2.5, rate_func=rate_functions.linear)
+        head_line.clear_updaters()
+        self.play(FadeOut(cap), run_time=0.2)
+        cap = self.caption("Duty is simply on-windows ÷ 8: the loop can only ask for 0, 12.5, 25 … 100 %.")
+        duty_txt = VGroup(*[label(f"{bin(next_masks[r]).count('1') * 12.5:g} %", 18, ORANGE).next_to(bits[r], RIGHT, buff=0.3) for r in range(len(names))])
+        self.play(FadeIn(duty_txt), run_time=0.5)
+        self.wait(2.0)
+        self.clear_all()
+
+    # -- 2. RTD -> PI --------------------------------------------------------
+
+    def section_pi(self):
+        head = self.heading("2. RTD → PI: temperature error to duty")
+        setpoint, kp, ki = 45.0, 20.0, 20.0 / 600.0
+        data = simulate(setpoint, kp, ki, minutes=24.0)
+        t = data[:, 0]
+        temp = data[:, 1]
+        duty = data[:, 2]
+        integ = data[:, 4]
+
+        axes = Axes(x_range=[0, 24, 6], y_range=[20, 50, 10], x_length=6.4, y_length=3.6,
+                    axis_config={"include_numbers": True, "font_size": 20, "color": MUTED, "label_constructor": Text, "decimal_number_config": {"num_decimal_places": 0}})
+        axes.to_edge(LEFT, buff=0.7).shift(DOWN * 0.3)
+        xlab = label("minutes", 18, MUTED).next_to(axes.x_axis, DOWN, buff=0.15)
+        ylab = label("RTD °C", 18, MUTED).next_to(axes.y_axis, UP, buff=0.1)
+        sp_line = DashedLine(axes.c2p(0, setpoint), axes.c2p(24, setpoint), color=MUTED)
+        sp_lab = label("setpoint 45 °C", 18, MUTED).next_to(sp_line, UP, buff=0.05).align_to(sp_line, RIGHT)
+        self.play(Create(axes), FadeIn(xlab), FadeIn(ylab), Create(sp_line), FadeIn(sp_lab), run_time=0.9)
+
+        law = VGroup(
+            label("duty = Kp·e + Ki·∫e dt", 26, WHITE),
+            label("e = setpoint − RTD", 20, MUTED),
+            label("Kp = 100 % ÷ 5 °C window", 20, MUTED),
+            label("Ki = Kp ÷ 600 s", 20, MUTED),
+        ).arrange(DOWN, aligned_edge=LEFT, buff=0.18)
+        law.to_edge(RIGHT, buff=0.6).shift(UP * 1.9)
+        self.play(FadeIn(law), run_time=0.7)
+
+        # Live bars: error, P term, I term, duty.
+        k_tr = ValueTracker(0)
+        bar_x = law.get_left()[0]
+        bar_len = 4.2
+        rows = [("error °C", RED, lambda k: setpoint - temp[k], 25.0),
+                ("P  %", BLUE, lambda k: kp * (setpoint - temp[k]), 100.0),
+                ("I  %", PURPLE, lambda k: ki * integ[k], 100.0),
+                ("duty %", ORANGE, lambda k: duty[k], 100.0)]
+        bars = VGroup()
+        for i, (name, color, fn, mx) in enumerate(rows):
+            y = -0.1 - i * 0.62
+            nm = label(name, 18, INK).move_to(RIGHT * (bar_x + 0.55) + UP * y)
+            anchor = RIGHT * (bar_x + 1.35) + UP * y
+            track = Rectangle(width=bar_len, height=0.3, stroke_color=MUTED, stroke_width=1, fill_color=CELL, fill_opacity=1).move_to(anchor, aligned_edge=LEFT)
+            b = always_redraw(lambda fn=fn, mx=mx, color=color, anchor=anchor: bar(min(max(fn(int(k_tr.get_value())), 0.0), mx), mx, bar_len, 0.3, color, anchor))
+            num = always_redraw(lambda fn=fn, anchor=anchor: DecimalNumber(fn(int(k_tr.get_value())), num_decimal_places=1, font_size=18, color=INK, mob_class=Text).next_to(anchor + RIGHT * bar_len, RIGHT, buff=0.15))
+            bars.add(nm, track, b, num)
+        self.play(FadeIn(bars), run_time=0.6)
+
+        curve = always_redraw(lambda: axes.plot_line_graph(t[: max(2, int(k_tr.get_value()))], temp[: max(2, int(k_tr.get_value()))], add_vertex_dots=False, line_color=GREEN, stroke_width=3))
+        dot = always_redraw(lambda: axes.plot_line_graph([t[int(k_tr.get_value())]], [temp[int(k_tr.get_value())]], vertex_dot_radius=0.07, vertex_dot_style={"fill_color": GREEN}))
+        self.add(curve, dot)
+        cap = self.caption("Far below the window the output rails at 100 %; the integrator is not advanced there.")
+        n = len(t)
+        self.play(k_tr.animate.set_value(int(n * 0.42)), run_time=5.0, rate_func=rate_functions.linear)
+        self.play(FadeOut(cap), run_time=0.2)
+        cap = self.caption("Inside the 5 °C window the P term falls away and the integrator carries the steady load.")
+        self.play(k_tr.animate.set_value(n - 1), run_time=7.0, rate_func=rate_functions.linear)
+        self.wait(1.2)
+        self.clear_all()
+
+    # -- 3. duty -> windows with carry --------------------------------------
+
+    def section_carry(self):
+        head = self.heading("3. Duty → windows, carrying the deficit")
+        duty = 30.0
+        intro = VGroup(
+            label("30 % of 8 windows = 2.4 windows per frame", 26, WHITE),
+            label("a frame can hold 2 or 3, never 2.4", 22, MUTED),
+        ).arrange(DOWN, buff=0.15).next_to(head, DOWN, buff=0.4)
+        self.play(FadeIn(intro), run_time=0.6)
+
+        # Table: frame | owed = 2.4 + carry | granted | carry out
+        cols = ["frame", "carry in", "owed", "granted", "carry out"]
+        col_x = [-5.4, -3.5, -1.7, 0.1, 1.9]
+        hdr = VGroup(*[label(c, 20, MUTED).move_to(RIGHT * x + UP * 1.2) for c, x in zip(cols, col_x)])
+        self.play(FadeIn(hdr), run_time=0.4)
+
+        frames_grid = cell_grid(5, FRAME_WINDOWS, w=0.32, h=0.3, gap=0.04)
+        carry = 0.0
+        rows = VGroup()
+        total = 0
+        for f in range(5):
+            windows, new_carry = windows_with_carry(duty, carry)
+            owed = duty / 100 * 8 + carry
+            y = 0.65 - f * 0.55
+            row = VGroup(
+                label(f"{f + 1}", 20, INK).move_to(RIGHT * col_x[0] + UP * y),
+                label(f"{carry:.1f}", 20, PURPLE).move_to(RIGHT * col_x[1] + UP * y),
+                label(f"{owed:.1f}", 20, INK).move_to(RIGHT * col_x[2] + UP * y),
+                label(f"{windows}", 22, ORANGE).move_to(RIGHT * col_x[3] + UP * y),
+                label(f"{new_carry:.1f}", 20, PURPLE).move_to(RIGHT * col_x[4] + UP * y),
+            )
+            cells = VGroup(*frames_grid[f]).move_to(RIGHT * 4.6 + UP * y)
+            for w in range(FRAME_WINDOWS):
+                frames_grid[f][w].set_fill(ORANGE if w < windows else CELL, 1)
+            self.play(FadeIn(row[:3]), run_time=0.35)
+            self.play(FadeIn(row[3]), FadeIn(cells), run_time=0.35)
+            self.play(FadeIn(row[4]), run_time=0.3)
+            if f < 4:
+                arrow = Arrow(row[4].get_bottom(), RIGHT * col_x[1] + UP * (y - 0.55) + UP * 0.15, color=PURPLE, stroke_width=2, buff=0.05, max_tip_length_to_length_ratio=0.2)
+                self.play(Create(arrow), run_time=0.25)
+                rows.add(arrow)
+            rows.add(row, cells)
+            total += windows
+            carry = new_carry
+        avg = label(f"granted over 5 frames: {total} ÷ 5 = {total / 5:g} windows, exactly the duty asked", 22, GREEN).to_edge(DOWN, buff=1.0)
+        self.play(FadeIn(avg), run_time=0.5)
+        cap = self.caption("The carry stays in [0, 1): a deficit below one window cannot wind up.", 22, INK)
+        self.wait(2.5)
+        self.clear_all()
+
+    # -- 4. scheduling under a cap ------------------------------------------
+
+    def section_schedule(self):
+        head = self.heading("4. Placing windows under a power cap")
+        names = ["pwr1", "pwr11", "pwr15", "pwr9", "pwr12", "pwr14"]
+        requests = [3, 2, 4, 1, 2, 3]
+        cap = 3
+        note = VGroup(
+            label(f"cap = 3 lines per window  ≈ 3 × {HEATER_W} W = 32 W", 24, WHITE),
+            label("each round, every heater still owed a window takes the least-loaded free one", 20, MUTED),
+        ).arrange(DOWN, buff=0.12).next_to(head, DOWN, buff=0.3)
+        self.play(FadeIn(note), run_time=0.6)
+
+        grid = cell_grid(len(names), FRAME_WINDOWS, w=0.6, h=0.42, gap=0.06)
+        g = grid_group(grid).move_to(DOWN * 0.55 + RIGHT * 0.9)
+        rowlab = VGroup(*[label(names[r], 20, INK).next_to(grid[r][0], LEFT, buff=0.3) for r in range(len(names))])
+        asked = VGroup(*[label(f"asks {requests[r]}", 18, MUTED).next_to(grid[r][-1], RIGHT, buff=0.3) for r in range(len(names))])
+        wlab = VGroup(*[label(f"w{w}", 18, MUTED).next_to(grid[0][w], UP, buff=0.15) for w in range(FRAME_WINDOWS)])
+        loads = [0] * FRAME_WINDOWS
+        load_txt = VGroup(*[label("0", 20, INK).next_to(grid[-1][w], DOWN, buff=0.2) for w in range(FRAME_WINDOWS)])
+        load_lab = label("on / cap 3", 18, MUTED).next_to(load_txt[0], LEFT, buff=0.3)
+        self.play(FadeIn(g), FadeIn(rowlab), FadeIn(asked), FadeIn(wlab), FadeIn(load_txt), FadeIn(load_lab), run_time=0.7)
+
+        masks, granted, placements = schedule_frame(requests, cap, rotate=0)
+        round_lab = label("round 1", 22, TEAL).to_edge(DOWN, buff=0.5)
+        self.play(FadeIn(round_lab), run_time=0.3)
+        seen = set()
+        rnd = 1
+        for i, w in placements:
+            if i in seen:
+                seen = {i}
+                rnd += 1
+                self.play(Transform(round_lab, label(f"round {rnd}", 22, TEAL).to_edge(DOWN, buff=0.5)), run_time=0.25)
+            else:
+                seen.add(i)
+            loads[w] += 1
+            col = ORANGE if loads[w] < cap else RED
+            self.play(
+                grid[i][w].animate.set_fill(ORANGE, 1),
+                Transform(load_txt[w], label(str(loads[w]), 20, col).move_to(load_txt[w])),
+                run_time=0.22,
+            )
+        self.wait(0.5)
+        self.play(FadeOut(round_lab), run_time=0.2)
+        cap_txt = self.caption("15 windows placed, no window above 3 lines, no heater owed a window it did not get.", 22, GREEN)
+        self.wait(1.2)
+        self.play(FadeOut(cap_txt), run_time=0.2)
+        cap_txt = self.caption("Next frame the rotation index advances, so the same demand lands on different windows.", 22, INK)
+        masks2, _, _ = schedule_frame(requests, cap, rotate=3)
+        anims = []
+        for r in range(len(names)):
+            for w in range(FRAME_WINDOWS):
+                anims.append(grid[r][w].animate.set_fill(ORANGE if (masks2[r] >> w) & 1 else CELL, 1))
+        counts = [sum((masks2[r] >> w) & 1 for r in range(len(names))) for w in range(FRAME_WINDOWS)]
+        for w in range(FRAME_WINDOWS):
+            anims.append(Transform(load_txt[w], label(str(counts[w]), 20, ORANGE if counts[w] < cap else RED).move_to(load_txt[w])))
+        self.play(*anims, run_time=0.8)
+        self.wait(2.0)
+        self.clear_all()
+
+    # -- 5. clipping and the integrator hold --------------------------------
+
+    def section_clip(self):
+        head = self.heading("5. When the cap clips, pause the integrator")
+        setpoint, kp, ki = 45.0, 20.0, 20.0 / 600.0
+        squeeze = (30.0, 60.0)
+        minutes = 100.0
+
+        def cap(t_min):
+            # Another group is heating from cold and takes most of the budget.
+            return 25.0 if squeeze[0] <= t_min < squeeze[1] else 100.0
+
+        hold = simulate(setpoint, kp, ki, minutes, cap_pct=cap, hold_when_clipped=True)
+        wind = simulate(setpoint, kp, ki, minutes, cap_pct=cap, hold_when_clipped=False)
+
+        intro = VGroup(
+            label("a group at setpoint loses most of the budget to a cold group for 30 min", 24, WHITE),
+            label("granted < requested  →  the frame is marked clipped", 20, MUTED),
+        ).arrange(DOWN, buff=0.12).next_to(head, DOWN, buff=0.25)
+        self.play(FadeIn(intro), run_time=0.6)
+
+        axis_cfg = {"include_numbers": True, "font_size": 18, "color": MUTED, "label_constructor": Text, "decimal_number_config": {"num_decimal_places": 0}}
+        ax_t = Axes(x_range=[0, minutes, 20], y_range=[20, 50, 10], x_length=6.0, y_length=2.9, axis_config=axis_cfg)
+        ax_i = Axes(x_range=[0, minutes, 20], y_range=[0, 80, 20], x_length=6.0, y_length=2.9, axis_config=axis_cfg)
+        ax_t.to_edge(LEFT, buff=0.8).shift(DOWN * 0.9)
+        ax_i.to_edge(RIGHT, buff=0.8).shift(DOWN * 0.9)
+        t_lab = label("RTD °C", 18, MUTED).next_to(ax_t, UP, buff=0.1).align_to(ax_t, LEFT)
+        i_lab = label("integral term, % of duty", 18, MUTED).next_to(ax_i, UP, buff=0.1).align_to(ax_i, LEFT)
+        m_lab = VGroup(label("minutes", 16, MUTED).next_to(ax_t.x_axis, DOWN, buff=0.1), label("minutes", 16, MUTED).next_to(ax_i.x_axis, DOWN, buff=0.1))
+        sp = DashedLine(ax_t.c2p(0, setpoint), ax_t.c2p(minutes, setpoint), color=MUTED)
+        bands = VGroup()
+        for ax, y0, y1 in ((ax_t, 20, 50), (ax_i, 0, 80)):
+            lo, hi = ax.c2p(squeeze[0], y0), ax.c2p(squeeze[1], y1)
+            band = Rectangle(width=hi[0] - lo[0], height=hi[1] - lo[1], fill_color=MUTED, fill_opacity=0.25, stroke_width=0)
+            band.move_to((lo + hi) / 2)
+            bands.add(band)
+        band_lab = label("squeezed:\ngranted ≤ 25 %", 14, INK, line_spacing=0.8).move_to(bands[0].get_bottom() + UP * 0.45)
+        self.play(Create(ax_t), Create(ax_i), FadeIn(t_lab), FadeIn(i_lab), FadeIn(m_lab), Create(sp), FadeIn(bands), FadeIn(band_lab), run_time=0.9)
+
+        k_tr = ValueTracker(2)
+
+        def partial(ax, data, col, idx, scale=1.0):
+            return always_redraw(lambda: ax.plot_line_graph(data[: int(k_tr.get_value()), 0], scale * data[: int(k_tr.get_value()), idx], add_vertex_dots=False, line_color=col, stroke_width=3))
+
+        wind_t = partial(ax_t, wind, RED, 1)
+        hold_t = partial(ax_t, hold, GREEN, 1)
+        wind_i = partial(ax_i, wind, RED, 4, ki)
+        hold_i = partial(ax_i, hold, GREEN, 4, ki)
+        legend = VGroup(
+            VGroup(Line(ORIGIN, RIGHT * 0.5, color=RED, stroke_width=4), label("integrate anyway: counts error the heater was never allowed to act on", 18, INK)).arrange(RIGHT, buff=0.15),
+            VGroup(Line(ORIGIN, RIGHT * 0.5, color=GREEN, stroke_width=4), label("hold while clipped and still below setpoint", 18, INK)).arrange(RIGHT, buff=0.15),
+        ).arrange(DOWN, aligned_edge=LEFT, buff=0.1).to_edge(DOWN, buff=0.35)
+        self.add(wind_t, hold_t, wind_i, hold_i)
+        self.play(FadeIn(legend), run_time=0.4)
+        n = len(hold)
+        self.play(k_tr.animate.set_value(n - 1), run_time=9.0, rate_func=rate_functions.linear)
+        lift = int(squeeze[1] * 60 / 0.5)
+        verdict = label(
+            f"at the lift the integral term is {ki * hold[lift, 4]:.0f} % held vs {ki * wind[lift, 4]:.0f} % wound; "
+            f"the held loop resumes from the real steady load",
+            20, WHITE).next_to(intro, DOWN, buff=0.12)
+        self.play(FadeIn(verdict), run_time=0.5)
+        self.wait(2.2)
+        self.clear_all()
+
+    # -- 6. the loop --------------------------------------------------------
+
+    def section_loop(self):
+        head = self.heading("6. The loop, every 500 ms")
+        steps = [
+            ("RTD read", "sweep frame, °C per lane", GREEN),
+            ("PI per group", "error → duty %", BLUE),
+            ("carry quantiser", "duty → whole windows", PURPLE),
+            ("scheduler", "cap, rotation → masks", TEAL),
+            ("window masks", "staged, latched at w0", ORANGE),
+            ("heaters", "62.5 ms slots of 10.6 W", RED),
+        ]
+        boxes = VGroup()
+        for name, sub, col in steps:
+            box = RoundedRectangle(width=3.4, height=1.0, corner_radius=0.15, stroke_color=col, stroke_width=2, fill_color=CELL, fill_opacity=1)
+            txt = VGroup(label(name, 22, WHITE), label(sub, 16, MUTED)).arrange(DOWN, buff=0.08).move_to(box)
+            boxes.add(VGroup(box, txt))
+        top = VGroup(boxes[0], boxes[1], boxes[2]).arrange(RIGHT, buff=0.9).shift(UP * 1.0)
+        bottom = VGroup(boxes[5], boxes[4], boxes[3]).arrange(RIGHT, buff=0.9).shift(DOWN * 1.4)
+        arrows = VGroup(
+            Arrow(boxes[0].get_right(), boxes[1].get_left(), buff=0.1, color=MUTED),
+            Arrow(boxes[1].get_right(), boxes[2].get_left(), buff=0.1, color=MUTED),
+            Arrow(boxes[2].get_bottom(), boxes[3].get_top(), buff=0.1, color=MUTED),
+            Arrow(boxes[3].get_left(), boxes[4].get_right(), buff=0.1, color=MUTED),
+            Arrow(boxes[4].get_left(), boxes[5].get_right(), buff=0.1, color=MUTED),
+            Arrow(boxes[5].get_top(), boxes[0].get_bottom(), buff=0.1, color=MUTED),
+        )
+        self.play(FadeIn(top), FadeIn(bottom), run_time=0.8)
+        self.play(Create(arrows), run_time=1.0)
+        fb_arrow = DashedLine(boxes[3].get_corner(UP + LEFT) + RIGHT * 0.3, boxes[1].get_corner(DOWN + RIGHT) + LEFT * 0.3, color=RED, stroke_width=2).add_tip(tip_length=0.2)
+        feedback = label("clipped last frame?", 18, RED).next_to(fb_arrow.get_center(), RIGHT, buff=0.35)
+        self.play(Create(fb_arrow), FadeIn(feedback), run_time=0.7)
+        cap = self.caption("Two frames a second; the deficit lives in the carry, the integrator pauses under the cap.", 22, INK)
+        for _ in range(2):
+            for i in range(6):
+                self.play(Indicate(boxes[i][0], color=steps[i][2], scale_factor=1.05), run_time=0.3)
+        self.wait(1.5)
+        self.clear_all()
