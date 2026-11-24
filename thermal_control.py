@@ -181,8 +181,26 @@ def simulate(setpoint_c, kp, ki, minutes, cap_pct=None, hold_when_clipped=True, 
 # --------------------------------------------------------------------------
 
 
+FONT = "Noto Sans"
+MONO = "DejaVu Sans Mono"
+# Widest any single text run may be, in scene units; the frame is 14.2 wide.
+MAX_TEXT_W = 13.0
+
+
+def ui_text(text, **kw):
+    """Text in the scene's sans font; used directly and as the constructor
+    for axis numbers and DecimalNumber so every glyph comes from one face."""
+    kw.setdefault("font", FONT)
+    return Text(text, **kw)
+
+
 def label(text, size=24, color=INK, **kw):
-    return Text(text, font_size=size, color=color, **kw)
+    """A text run that is never wider than the frame."""
+    kw.setdefault("font", FONT)
+    mob = Text(text, font_size=size, color=color, **kw)
+    if mob.width > MAX_TEXT_W:
+        mob.scale_to_fit_width(MAX_TEXT_W)
+    return mob
 
 
 def cell_grid(rows, cols, w=0.55, h=0.42, gap=0.06):
@@ -284,7 +302,7 @@ class ThermalControl(Scene):
         bits = VGroup()
         for r, name in enumerate(names):
             rows.add(label(name, 20, INK).next_to(grid[r][0], LEFT, buff=0.35))
-            bits.add(label(f"0b{masks[r]:08b}", 18, MUTED, font="monospace").next_to(grid[r][-1], RIGHT, buff=0.35))
+            bits.add(label(f"0b{masks[r]:08b}", 18, MUTED, font=MONO).next_to(grid[r][-1], RIGHT, buff=0.35))
         self.play(FadeIn(g), FadeIn(rows), run_time=0.7)
         cap = self.caption("Each heater line carries one 8-bit mask: bit p means on during window p.")
         self.play(FadeIn(bits), run_time=0.5)
@@ -310,7 +328,7 @@ class ThermalControl(Scene):
         self.play(pos.animate.set_value(1.0), run_time=2.5, rate_func=rate_functions.linear)
         self.play(FadeOut(cap), run_time=0.2)
         cap = self.caption("A new mask can be staged any time; it is latched at window 0 of the next frame.")
-        new_bits = VGroup(*[label(f"0b{next_masks[r]:08b}", 18, GREEN, font="monospace").move_to(bits[r]) for r in range(len(names))])
+        new_bits = VGroup(*[label(f"0b{next_masks[r]:08b}", 18, GREEN, font=MONO).move_to(bits[r]) for r in range(len(names))])
         self.play(Transform(bits, new_bits), run_time=0.5)
         pos.set_value(0.0)
         self.play(*paint(next_masks), run_time=0.3)
@@ -342,7 +360,7 @@ class ThermalControl(Scene):
         integ = data[:, 4]
 
         axes = Axes(x_range=[0, 24, 6], y_range=[20, 50, 10], x_length=6.4, y_length=3.6,
-                    axis_config={"include_numbers": True, "font_size": 20, "color": MUTED, "label_constructor": Text, "decimal_number_config": {"num_decimal_places": 0}})
+                    axis_config={"include_numbers": True, "font_size": 20, "color": MUTED, "label_constructor": ui_text, "decimal_number_config": {"num_decimal_places": 0}})
         axes.to_edge(LEFT, buff=0.7).shift(DOWN * 0.3)
         xlab = label("minutes", 18, MUTED).next_to(axes.x_axis, DOWN, buff=0.15)
         ylab = label("RTD °C", 18, MUTED).next_to(axes.y_axis, UP, buff=0.1)
@@ -364,8 +382,8 @@ class ThermalControl(Scene):
 
         # Live bars: error, P term, I term, duty.
         k_tr = ValueTracker(0)
-        bar_x = law.get_left()[0]
-        bar_len = 4.2
+        bar_x = 2.0
+        bar_len = 3.0
         rows = [("error °C", RED, lambda k: setpoint - temp[k], 25.0),
                 ("P  %", BLUE, lambda k: kp * (setpoint - temp[k]), 100.0),
                 ("I  %", PURPLE, lambda k: ki * integ[k], 100.0),
@@ -377,7 +395,7 @@ class ThermalControl(Scene):
             anchor = RIGHT * (bar_x + 1.35) + UP * y
             track = Rectangle(width=bar_len, height=0.3, stroke_color=MUTED, stroke_width=1, fill_color=CELL, fill_opacity=1).move_to(anchor, aligned_edge=LEFT)
             b = always_redraw(lambda fn=fn, mx=mx, color=color, anchor=anchor: bar(min(max(fn(int(k_tr.get_value())), 0.0), mx), mx, bar_len, 0.3, color, anchor))
-            num = always_redraw(lambda fn=fn, anchor=anchor: DecimalNumber(fn(int(k_tr.get_value())), num_decimal_places=1, font_size=18, color=INK, mob_class=Text).next_to(anchor + RIGHT * bar_len, RIGHT, buff=0.15))
+            num = always_redraw(lambda fn=fn, anchor=anchor: DecimalNumber(fn(int(k_tr.get_value())), num_decimal_places=1, font_size=18, color=INK, mob_class=ui_text).next_to(anchor + RIGHT * bar_len, RIGHT, buff=0.15))
             bars.add(nm, track, b, num)
         self.play(FadeIn(bars), run_time=0.6)
 
@@ -521,7 +539,7 @@ class ThermalControl(Scene):
             carry = new_carry
         self.wait(0.6)
         inv = label("asked − delivered is exactly the ledger, so the deficit is always below one window", 20, GREEN).to_edge(DOWN, buff=0.95)
-        avg = label(f"6 frames: {total} windows delivered for 14.4 asked; after 5 frames it was 12 for 12.0, exactly 30 %", 20, INK).to_edge(DOWN, buff=0.45)
+        avg = label(f"6 frames: {total} delivered for 14.4 asked; the first 5 were 12 for 12.0, exactly 30 %", 20, INK).to_edge(DOWN, buff=0.45)
         self.play(FadeIn(inv), run_time=0.5)
         self.wait(1.5)
         self.play(FadeIn(avg), run_time=0.5)
@@ -530,9 +548,9 @@ class ThermalControl(Scene):
 
         # -- D. the rules that keep it bounded -------------------------------------
         rules = VGroup(
-            VGroup(label("one ledger per heater line", 24, WHITE), label("the PI runs per RTD group, so every heater in a group is owed the same 2.4; each remembers its own fraction", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
-            VGroup(label("the ledger only remembers fractions", 24, WHITE), label("carry out = owed − granted, kept in [0, 1): it can never reach a whole window, so it cannot wind up", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
-            VGroup(label("what a frame cannot hold is forgotten, not banked", 24, WHITE), label("at 100 % the heater is owed nothing; windows the scheduler clips are left to the PI (section 5), not added here", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
+            VGroup(label("one ledger per heater line", 24, WHITE), label("one PI per RTD group hands every heater the same 2.4; each keeps its own fraction", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
+            VGroup(label("the ledger only remembers fractions", 24, WHITE), label("carry out = owed − granted, kept in [0, 1): never a whole window, so it cannot wind up", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
+            VGroup(label("what a frame cannot hold is forgotten, not banked", 24, WHITE), label("at 100 % nothing is owed; windows the scheduler clips go to the PI (section 5), not here", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
         ).arrange(DOWN, aligned_edge=LEFT, buff=0.45).next_to(head, DOWN, buff=0.5).to_edge(LEFT, buff=0.7)
         for r in rules:
             self.play(FadeIn(r, shift=RIGHT * 0.2), run_time=0.5)
@@ -656,7 +674,7 @@ class ThermalControl(Scene):
         ).arrange(DOWN, buff=0.12).next_to(head, DOWN, buff=0.25)
         self.play(FadeIn(intro), run_time=0.6)
 
-        axis_cfg = {"include_numbers": True, "font_size": 18, "color": MUTED, "label_constructor": Text, "decimal_number_config": {"num_decimal_places": 0}}
+        axis_cfg = {"include_numbers": True, "font_size": 18, "color": MUTED, "label_constructor": ui_text, "decimal_number_config": {"num_decimal_places": 0}}
         ax_t = Axes(x_range=[0, minutes, 20], y_range=[20, 50, 10], x_length=6.0, y_length=2.9, axis_config=axis_cfg)
         ax_i = Axes(x_range=[0, minutes, 20], y_range=[0, 80, 20], x_length=6.0, y_length=2.9, axis_config=axis_cfg)
         ax_t.to_edge(LEFT, buff=0.8).shift(DOWN * 0.9)
@@ -707,9 +725,9 @@ class ThermalControl(Scene):
         why = VGroup(
             label("Why not put the clipped windows on the ledger?", 26, WHITE),
             label("the ledger is bounded below one window on purpose: that is what makes it safe", 20, MUTED),
-            label("a clipped frame can be short by whole windows, every frame, for as long as the squeeze lasts", 20, MUTED),
-            label("banking that would be a second, unbounded integrator, paid back all at once when the budget frees", 20, MUTED),
-            label("so the shortfall goes to the PI, whose integrator is held while clipped and still below setpoint", 20, GREEN),
+            label("a clipped frame can be short by whole windows, every frame, as long as the squeeze lasts", 20, MUTED),
+            label("banking that is a second, unbounded integrator, repaid all at once when the budget frees", 20, MUTED),
+            label("so the shortfall goes to the PI: its integrator holds while clipped and below setpoint", 20, GREEN),
             label("the ledger keeps fractions; the PI keeps the long-term deficit; neither can run away", 22, WHITE),
         ).arrange(DOWN, buff=0.28).next_to(head, DOWN, buff=0.5)
         for line in why:
