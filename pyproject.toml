@@ -3,7 +3,7 @@ name = "presentation-scripts"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11.5"
 dependencies = [
     "astropy>=6.0",
     "healpy>=1.17.3",
