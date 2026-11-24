@@ -320,7 +320,13 @@ class ThermalControl(Scene):
         cap = self.caption("Duty is simply on-windows ÷ 8: the loop can only ask for 0, 12.5, 25 … 100 %.")
         duty_txt = VGroup(*[label(f"{bin(next_masks[r]).count('1') * 12.5:g} %", 18, ORANGE).next_to(bits[r], RIGHT, buff=0.3) for r in range(len(names))])
         self.play(FadeIn(duty_txt), run_time=0.5)
-        self.wait(2.0)
+        self.wait(2.5)
+        self.play(FadeOut(cap), run_time=0.2)
+        cap = self.caption("The loop rewrites every heater's mask once per frame, two times a second, from fresh RTD readings.")
+        self.wait(2.5)
+        self.play(FadeOut(cap), run_time=0.2)
+        cap = self.caption("Finer control than eighths comes from varying the count frame to frame; that is section 3.")
+        self.wait(2.5)
         self.clear_all()
 
     # -- 2. RTD -> PI --------------------------------------------------------
@@ -352,6 +358,9 @@ class ThermalControl(Scene):
         ).arrange(DOWN, aligned_edge=LEFT, buff=0.18)
         law.to_edge(RIGHT, buff=0.6).shift(UP * 1.9)
         self.play(FadeIn(law), run_time=0.7)
+        cap = self.caption("The window is the band where the P term alone spans 0 to 100 %; the integrator removes the standing error.")
+        self.wait(2.5)
+        self.play(FadeOut(cap), run_time=0.2)
 
         # Live bars: error, P term, I term, duty.
         k_tr = ValueTracker(0)
@@ -381,58 +390,177 @@ class ThermalControl(Scene):
         self.play(FadeOut(cap), run_time=0.2)
         cap = self.caption("Inside the 5 °C window the P term falls away and the integrator carries the steady load.")
         self.play(k_tr.animate.set_value(n - 1), run_time=7.0, rate_func=rate_functions.linear)
-        self.wait(1.2)
+        self.wait(1.0)
+        self.play(FadeOut(cap), run_time=0.2)
+        cap = self.caption("One PI per RTD group: every heater assigned to that RTD is handed the same duty.")
+        self.wait(2.5)
+        self.play(FadeOut(cap), run_time=0.2)
+        cap = self.caption("Duty is a percentage; the frame only takes whole windows. The gap between them is the next section.")
+        self.wait(2.5)
         self.clear_all()
 
     # -- 3. duty -> windows with carry --------------------------------------
 
+    def strip(self, lit, w=0.3, h=0.28, gap=0.04):
+        """One frame's eight windows as a small strip with the first `lit` on."""
+        cells = cell_grid(1, FRAME_WINDOWS, w=w, h=h, gap=gap)[0]
+        for i, cell in enumerate(cells):
+            cell.set_fill(ORANGE if i < lit else CELL, 1)
+        return VGroup(*cells)
+
     def section_carry(self):
-        head = self.heading("3. Duty → windows, carrying the deficit")
+        head = self.heading("3. Duty → windows: the deficit ledger")
         duty = 30.0
+
+        # -- A. the problem ------------------------------------------------
         intro = VGroup(
-            label("30 % of 8 windows = 2.4 windows per frame", 26, WHITE),
-            label("a frame can hold 2 or 3, never 2.4", 22, MUTED),
-        ).arrange(DOWN, buff=0.15).next_to(head, DOWN, buff=0.4)
+            label("the PI asks for 30 %   →   0.30 × 8 = 2.4 windows per frame", 26, WHITE),
+            label("a frame holds whole windows: 2 or 3, never 2.4", 22, MUTED),
+        ).arrange(DOWN, buff=0.15).next_to(head, DOWN, buff=0.35)
         self.play(FadeIn(intro), run_time=0.6)
+        self.wait(1.2)
 
-        # Table: frame | owed = 2.4 + carry | granted | carry out
+        # -- B. plain rounding is short forever --------------------------------
+        q = label("Round to nearest?", 24, RED).move_to(UP * 1.3)
+        self.play(FadeIn(q), run_time=0.4)
+        naive = VGroup()
+        for f in range(5):
+            s = self.strip(2).move_to(RIGHT * (-4.2 + f * 2.1) + UP * 0.5)
+            fl = label(f"frame {f + 1}", 16, MUTED).next_to(s, UP, buff=0.1)
+            naive.add(VGroup(s, fl))
+            self.play(FadeIn(naive[-1]), run_time=0.25)
+        tally = VGroup(
+            label("asked      5 × 2.4 = 12 windows", 22, INK),
+            label("delivered  5 × 2    = 10 windows  →  25 %, not 30 %", 22, RED),
+            label("the 0.4 lost each frame is never paid back: a 5 % bias, forever", 22, RED),
+        ).arrange(DOWN, aligned_edge=LEFT, buff=0.15).move_to(DOWN * 1.2)
+        for line in tally:
+            self.play(FadeIn(line), run_time=0.4)
+            self.wait(0.6)
+        self.wait(1.0)
+        self.play(FadeOut(q), FadeOut(naive), FadeOut(tally), run_time=0.5)
+
+        # -- C. the ledger --------------------------------------------------------
+        rule = label("keep a ledger: carry the fraction a frame could not hold into the next frame", 24, GREEN).move_to(UP * 1.75)
+        self.play(FadeIn(rule), run_time=0.5)
+        self.wait(0.8)
+        self.play(FadeOut(intro), rule.animate.next_to(head, DOWN, buff=0.3), run_time=0.5)
+
         cols = ["frame", "carry in", "owed", "granted", "carry out"]
-        col_x = [-5.4, -3.5, -1.7, 0.1, 1.9]
-        hdr = VGroup(*[label(c, 20, MUTED).move_to(RIGHT * x + UP * 1.2) for c, x in zip(cols, col_x)])
-        self.play(FadeIn(hdr), run_time=0.4)
+        col_x = [-6.3, -4.9, -3.6, -2.3, -1.0]
+        hdr = VGroup(*[label(c, 18, MUTED).move_to(RIGHT * x + UP * 1.55) for c, x in zip(cols, col_x)])
+        formula = label("owed = 2.4 + carry in;  granted = ⌊owed⌋;  carry out = owed − granted", 18, MUTED).next_to(rule, DOWN, buff=0.15)
+        self.play(FadeIn(hdr), FadeIn(formula), run_time=0.4)
 
-        frames_grid = cell_grid(5, FRAME_WINDOWS, w=0.32, h=0.3, gap=0.04)
+        # The ledger gauge: one window tall.
+        gauge_h = 2.2
+        gauge_x, gauge_y0 = 4.3, -1.05
+        track = Rectangle(width=0.55, height=gauge_h, stroke_color=MUTED, stroke_width=1, fill_color=CELL, fill_opacity=1)
+        track.move_to(RIGHT * gauge_x + UP * gauge_y0, aligned_edge=DOWN)
+        one = DashedLine(track.get_corner(UP + LEFT) + LEFT * 0.2, track.get_corner(UP + RIGHT) + RIGHT * 0.2, color=RED)
+        one_lab = label("1 window: never reached", 14, RED).next_to(one, UP, buff=0.05)
+        zero_lab = label("0", 14, MUTED).next_to(track, DOWN, buff=0.05)
+        gauge_lab = label("deficit ledger", 18, PURPLE).next_to(zero_lab, DOWN, buff=0.05)
+        fill = Rectangle(width=0.55, height=1e-3, fill_color=PURPLE, fill_opacity=0.9, stroke_width=0).move_to(track.get_bottom(), aligned_edge=DOWN)
+        self.play(FadeIn(track), FadeIn(one), FadeIn(one_lab), FadeIn(zero_lab), FadeIn(gauge_lab), run_time=0.5)
+        self.add(fill)
+
+        # Running totals on the far right.
+        tot_x = 5.9
+        asked_lab = label("asked", 16, MUTED).move_to(RIGHT * tot_x + UP * 0.9)
+        deliv_lab = label("delivered", 16, MUTED).move_to(RIGHT * tot_x + UP * 0.1)
+        diff_lab = label("asked − delivered", 14, MUTED).move_to(RIGHT * tot_x + DOWN * 0.7)
+        asked_num = label("0.0", 22, INK).next_to(asked_lab, DOWN, buff=0.05)
+        deliv_num = label("0", 22, ORANGE).next_to(deliv_lab, DOWN, buff=0.05)
+        diff_num = label("0.0", 22, PURPLE).next_to(diff_lab, DOWN, buff=0.05)
+        self.play(FadeIn(asked_lab), FadeIn(deliv_lab), FadeIn(diff_lab), FadeIn(asked_num), FadeIn(deliv_num), FadeIn(diff_num), run_time=0.4)
+
         carry = 0.0
         rows = VGroup()
         total = 0
-        for f in range(5):
+        for f in range(6):
             windows, new_carry = windows_with_carry(duty, carry)
-            owed = duty / 100 * 8 + carry
-            y = 0.65 - f * 0.55
+            owed = round(duty / 100 * 8 + carry, 9)
+            y = 1.05 - f * 0.5
             row = VGroup(
-                label(f"{f + 1}", 20, INK).move_to(RIGHT * col_x[0] + UP * y),
-                label(f"{carry:.1f}", 20, PURPLE).move_to(RIGHT * col_x[1] + UP * y),
-                label(f"{owed:.1f}", 20, INK).move_to(RIGHT * col_x[2] + UP * y),
-                label(f"{windows}", 22, ORANGE).move_to(RIGHT * col_x[3] + UP * y),
-                label(f"{new_carry:.1f}", 20, PURPLE).move_to(RIGHT * col_x[4] + UP * y),
+                label(f"{f + 1}", 18, INK).move_to(RIGHT * col_x[0] + UP * y),
+                label(f"{carry:.1f}", 18, PURPLE).move_to(RIGHT * col_x[1] + UP * y),
+                label(f"{owed:.1f}", 18, INK).move_to(RIGHT * col_x[2] + UP * y),
+                label(f"{windows}", 20, ORANGE).move_to(RIGHT * col_x[3] + UP * y),
+                label(f"{new_carry:.1f}", 18, PURPLE).move_to(RIGHT * col_x[4] + UP * y),
             )
-            cells = VGroup(*frames_grid[f]).move_to(RIGHT * 4.6 + UP * y)
-            for w in range(FRAME_WINDOWS):
-                frames_grid[f][w].set_fill(ORANGE if w < windows else CELL, 1)
-            self.play(FadeIn(row[:3]), run_time=0.35)
-            self.play(FadeIn(row[3]), FadeIn(cells), run_time=0.35)
-            self.play(FadeIn(row[4]), run_time=0.3)
-            if f < 4:
-                arrow = Arrow(row[4].get_bottom(), RIGHT * col_x[1] + UP * (y - 0.55) + UP * 0.15, color=PURPLE, stroke_width=2, buff=0.05, max_tip_length_to_length_ratio=0.2)
-                self.play(Create(arrow), run_time=0.25)
+            cells = self.strip(windows, w=0.26, h=0.26).move_to(RIGHT * 1.45 + UP * y)
+            total += windows
+            # owed, then the whole windows that fit, then the fraction left over
+            self.play(FadeIn(row[:3]), run_time=0.3)
+            self.play(FadeIn(row[3]), FadeIn(cells), run_time=0.3)
+            new_fill = Rectangle(width=0.55, height=max(1e-3, new_carry * gauge_h), fill_color=PURPLE, fill_opacity=0.9, stroke_width=0).move_to(track.get_bottom(), aligned_edge=DOWN)
+            self.play(
+                FadeIn(row[4]),
+                Transform(fill, new_fill),
+                Transform(asked_num, label(f"{(f + 1) * 2.4:.1f}", 22, INK).move_to(asked_num)),
+                Transform(deliv_num, label(f"{total}", 22, ORANGE).move_to(deliv_num)),
+                Transform(diff_num, label(f"{(f + 1) * 2.4 - total:.1f}", 22, PURPLE).move_to(diff_num)),
+                run_time=0.4,
+            )
+            if f == 1:
+                hint = label("0.8 owed, still under a whole window: nothing extra yet", 16, PURPLE).move_to(DOWN * 2.5 + LEFT * 2.5)
+                self.play(FadeIn(hint), run_time=0.3)
+                self.wait(1.0)
+                self.play(FadeOut(hint), run_time=0.2)
+            if f == 2:
+                hint = label("2.4 + 0.8 = 3.2: a third window is granted, 0.2 stays on the ledger", 16, PURPLE).move_to(DOWN * 2.5 + LEFT * 2.5)
+                self.play(FadeIn(hint), run_time=0.3)
+                self.wait(1.2)
+                self.play(FadeOut(hint), run_time=0.2)
+            if f < 5:
+                arrow = Arrow(row[4].get_bottom(), RIGHT * col_x[1] + UP * (y - 0.5) + UP * 0.13, color=PURPLE, stroke_width=2, buff=0.04, max_tip_length_to_length_ratio=0.2)
+                self.play(Create(arrow), run_time=0.2)
                 rows.add(arrow)
             rows.add(row, cells)
-            total += windows
             carry = new_carry
-        avg = label(f"granted over 5 frames: {total} ÷ 5 = {total / 5:g} windows, exactly the duty asked", 22, GREEN).to_edge(DOWN, buff=1.0)
+        self.wait(0.6)
+        inv = label("asked − delivered is exactly the ledger, so the deficit is always below one window", 20, GREEN).to_edge(DOWN, buff=0.95)
+        avg = label(f"6 frames: {total} windows delivered for 14.4 asked; after 5 frames it was 12 for 12.0, exactly 30 %", 20, INK).to_edge(DOWN, buff=0.45)
+        self.play(FadeIn(inv), run_time=0.5)
+        self.wait(1.5)
         self.play(FadeIn(avg), run_time=0.5)
-        cap = self.caption("The carry stays in [0, 1): a deficit below one window cannot wind up.", 22, INK)
         self.wait(2.5)
+        self.play(*[FadeOut(m) for m in self.mobjects if m is not head], run_time=0.5)
+
+        # -- D. the rules that keep it bounded -------------------------------------
+        rules = VGroup(
+            VGroup(label("one ledger per heater line", 24, WHITE), label("the PI runs per RTD group, so every heater in a group is owed the same 2.4; each remembers its own fraction", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
+            VGroup(label("the ledger only remembers fractions", 24, WHITE), label("carry out = owed − granted, kept in [0, 1): it can never reach a whole window, so it cannot wind up", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
+            VGroup(label("what a frame cannot hold is forgotten, not banked", 24, WHITE), label("at 100 % the heater is owed nothing; windows the scheduler clips are left to the PI (section 5), not added here", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
+        ).arrange(DOWN, aligned_edge=LEFT, buff=0.45).next_to(head, DOWN, buff=0.5).to_edge(LEFT, buff=0.7)
+        for r in rules:
+            self.play(FadeIn(r, shift=RIGHT * 0.2), run_time=0.5)
+            self.wait(1.8)
+        self.wait(0.6)
+        self.play(FadeOut(rules), run_time=0.4)
+
+        # -- E. a low duty still gets delivered ----------------------------------------
+        low = label("10 % asks for 0.8 windows per frame: less than one", 24, WHITE).next_to(head, DOWN, buff=0.4)
+        self.play(FadeIn(low), run_time=0.5)
+        carry, got = 0.0, []
+        strips = VGroup()
+        ledger = VGroup()
+        for f in range(10):
+            windows, carry = windows_with_carry(10.0, carry)
+            got.append(windows)
+            s = self.strip(windows, w=0.13, h=0.26, gap=0.02).move_to(RIGHT * (-5.4 + f * 1.2) + UP * 0.6)
+            fl = label(f"{f + 1}", 14, MUTED).next_to(s, UP, buff=0.08)
+            c = label(f"{carry:.1f}", 16, PURPLE).next_to(s, DOWN, buff=0.1)
+            strips.add(VGroup(s, fl))
+            ledger.add(c)
+            self.play(FadeIn(strips[-1]), FadeIn(c), run_time=0.22)
+        lab = label("ledger after each frame", 16, PURPLE).next_to(ledger, DOWN, buff=0.15)
+        result = label(f"{sum(got)} windows in 10 frames = {sum(got) / 10:g} per frame = {sum(got) / 80 * 100:g} %", 24, GREEN).move_to(DOWN * 1.4)
+        self.play(FadeIn(lab), run_time=0.3)
+        self.play(FadeIn(result), run_time=0.5)
+        cap = self.caption("Every duty the PI can name is delivered on average; only the timing is quantised to the frame.", 22, INK)
+        self.wait(3.0)
         self.clear_all()
 
     # -- 4. scheduling under a cap ------------------------------------------
@@ -443,7 +571,7 @@ class ThermalControl(Scene):
         requests = [3, 2, 4, 1, 2, 3]
         cap = 3
         note = VGroup(
-            label(f"cap = 3 lines per window  ≈ 3 × {HEATER_W} W = 32 W", 24, WHITE),
+            label(f"budget 40 W ÷ {HEATER_W} W per heater  →  cap = 3 lines in any window (32 W)", 24, WHITE),
             label("each round, every heater still owed a window takes the least-loaded free one", 20, MUTED),
         ).arrange(DOWN, buff=0.12).next_to(head, DOWN, buff=0.3)
         self.play(FadeIn(note), run_time=0.6)
@@ -459,6 +587,12 @@ class ThermalControl(Scene):
         self.play(FadeIn(g), FadeIn(rowlab), FadeIn(asked), FadeIn(wlab), FadeIn(load_txt), FadeIn(load_lab), run_time=0.7)
 
         masks, granted, placements = schedule_frame(requests, cap, rotate=0)
+        pre = self.caption("The counts on the right came from each heater's ledger; the scheduler only decides where they land.", 20, INK)
+        self.wait(2.5)
+        self.play(FadeOut(pre), run_time=0.2)
+        pre = self.caption("Heaters owed the most go first; ties break on a start index that rotates every frame.", 20, INK)
+        self.wait(2.0)
+        self.play(FadeOut(pre), run_time=0.2)
         round_lab = label("round 1", 22, TEAL).to_edge(DOWN, buff=0.5)
         self.play(FadeIn(round_lab), run_time=0.3)
         seen = set()
@@ -493,6 +627,12 @@ class ThermalControl(Scene):
             anims.append(Transform(load_txt[w], label(str(counts[w]), 20, ORANGE if counts[w] < cap else RED).move_to(load_txt[w])))
         self.play(*anims, run_time=0.8)
         self.wait(2.0)
+        self.play(FadeOut(cap_txt), run_time=0.2)
+        cap_txt = self.caption("Rotation spreads switching wear and keeps the supply load flat across the frame.", 20, INK)
+        self.wait(2.0)
+        self.play(FadeOut(cap_txt), run_time=0.2)
+        cap_txt = self.caption("If the cap cannot fit every request, some heaters get fewer windows than asked: the frame is clipped.", 20, INK)
+        self.wait(2.5)
         self.clear_all()
 
     # -- 5. clipping and the integrator hold --------------------------------
@@ -560,7 +700,22 @@ class ThermalControl(Scene):
             f"the held loop resumes from the real steady load",
             20, WHITE).next_to(intro, DOWN, buff=0.12)
         self.play(FadeIn(verdict), run_time=0.5)
-        self.wait(2.2)
+        self.wait(2.5)
+        self.play(*[FadeOut(m) for m in self.mobjects if m is not head], run_time=0.5)
+
+        # Why the clipped windows are not put on the ledger.
+        why = VGroup(
+            label("Why not put the clipped windows on the ledger?", 26, WHITE),
+            label("the ledger is bounded below one window on purpose: that is what makes it safe", 20, MUTED),
+            label("a clipped frame can be short by whole windows, every frame, for as long as the squeeze lasts", 20, MUTED),
+            label("banking that would be a second, unbounded integrator, paid back all at once when the budget frees", 20, MUTED),
+            label("so the shortfall goes to the PI, whose integrator is held while clipped and still below setpoint", 20, GREEN),
+            label("the ledger keeps fractions; the PI keeps the long-term deficit; neither can run away", 22, WHITE),
+        ).arrange(DOWN, buff=0.28).next_to(head, DOWN, buff=0.5)
+        for line in why:
+            self.play(FadeIn(line, shift=UP * 0.1), run_time=0.45)
+            self.wait(1.4)
+        self.wait(1.0)
         self.clear_all()
 
     # -- 6. the loop --------------------------------------------------------
@@ -599,5 +754,18 @@ class ThermalControl(Scene):
         for _ in range(2):
             for i in range(6):
                 self.play(Indicate(boxes[i][0], color=steps[i][2], scale_factor=1.05), run_time=0.3)
+        self.wait(1.0)
+        self.play(FadeOut(cap), run_time=0.2)
+
+        # One heater, one frame, with real numbers.
+        worked = VGroup(
+            label("pwr11 on rtd9, one frame:", 18, WHITE),
+            label("RTD 44.6 °C → e = 0.4 °C → duty = 20·0.4 + I ≈ 18 %", 18, INK),
+            label("0.18 × 8 = 1.44 windows + ledger 0.60 = 2.04 → 2 granted, 0.04 carried", 18, PURPLE),
+            label("scheduler puts them in the two emptiest windows → mask 0b00100001", 18, ORANGE),
+        ).arrange(DOWN, aligned_edge=LEFT, buff=0.08).to_edge(DOWN, buff=0.3).to_edge(LEFT, buff=0.7)
+        for line in worked:
+            self.play(FadeIn(line), run_time=0.4)
+            self.wait(1.2)
         self.wait(1.5)
         self.clear_all()

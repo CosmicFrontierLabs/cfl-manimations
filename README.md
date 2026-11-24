@@ -110,7 +110,7 @@ The control math is a direct port of the `heater-schedule` crate in `tracking-te
 so the numbers on screen are the ones the hardware loop produces. No LaTeX is needed for
 this scene.
 
-- `ThermalControl` — the full walkthrough (about 90 s)
+- `ThermalControl` — the full walkthrough (about 3 min)
 
 ```bash
 uv run manim -pql thermal_control.py ThermalControl
