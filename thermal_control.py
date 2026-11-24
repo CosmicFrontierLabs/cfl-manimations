@@ -69,6 +69,9 @@ CELL = "#262838"
 
 FRAME_WINDOWS = 8
 WINDOW_MS = 62.5
+# One bench heater on the 12 V rail, as measured: 13 Ω at 11.7 V.
+SUPPLY_V = 11.7
+HEATER_A = 0.9
 HEATER_W = 10.6
 
 
@@ -238,6 +241,7 @@ class ThermalControl(Scene):
         self.camera.background_color = BLACK
         self.title_card()
         self.section_frame()
+        self.section_currents()
         self.section_pi()
         self.section_carry()
         self.section_schedule()
@@ -273,84 +277,220 @@ class ThermalControl(Scene):
 
     # -- 1. the frame ------------------------------------------------------
 
-    def section_frame(self):
-        head = self.heading("1. The frame: eight windows of 62.5 ms")
-
-        # The frame bar.
-        bar_w, bar_h = 8.0, 0.7
-        frame = Rectangle(width=bar_w, height=bar_h, stroke_color=INK, stroke_width=2).shift(UP * 1.6)
+    def frame_bar(self, y, bar_w=8.0, bar_h=0.6):
+        """The 500 ms frame as a bar of eight windows, centred at height y.
+        Returns (frame rectangle, everything drawn)."""
+        frame = Rectangle(width=bar_w, height=bar_h, stroke_color=INK, stroke_width=2).move_to(UP * y)
         ticks = VGroup()
         wlabels = VGroup()
         for w in range(FRAME_WINDOWS):
             x = frame.get_left()[0] + w * bar_w / FRAME_WINDOWS
             if w:
-                ticks.add(Line(frame.get_top() * [0, 1, 0] + RIGHT * x, frame.get_bottom() * [0, 1, 0] + RIGHT * x, stroke_color=MUTED, stroke_width=1))
-            wlabels.add(label(f"w{w}", 20, MUTED).move_to(RIGHT * (x + bar_w / FRAME_WINDOWS / 2) + UP * (frame.get_top()[1] + 0.3)))
-        span = label("500 ms frame", 22, INK).next_to(frame, LEFT, buff=0.3)
-        self.play(Create(frame), FadeIn(span), run_time=0.8)
-        self.play(FadeIn(ticks), FadeIn(wlabels), run_time=0.6)
+                ticks.add(Line(RIGHT * x + UP * frame.get_top()[1], RIGHT * x + UP * frame.get_bottom()[1], stroke_color=MUTED, stroke_width=1))
+            wlabels.add(label(f"w{w}", 20, MUTED).move_to(RIGHT * (x + bar_w / FRAME_WINDOWS / 2) + UP * (frame.get_top()[1] + 0.28)))
+        span = label("500 ms frame", 20, INK).next_to(frame, LEFT, buff=0.3)
+        return frame, VGroup(frame, ticks, wlabels, span)
 
-        # Heater mask rows under the frame.
-        names = ["pwr1", "pwr11", "pwr15", "pwr9"]
-        masks = [0b00100101, 0b10010010, 0b00000000, 0b11111111]
-        next_masks = [0b01001010, 0b00100100, 0b00000001, 0b11111111]
-        grid = cell_grid(len(names), FRAME_WINDOWS, w=bar_w / FRAME_WINDOWS - 0.06, h=0.42)
-        g = grid_group(grid)
-        g.move_to(frame.get_center() + DOWN * 1.9)
-        g.align_to(frame, LEFT).shift(RIGHT * 0.03)
-        rows = VGroup()
-        bits = VGroup()
-        for r, name in enumerate(names):
-            rows.add(label(name, 20, INK).next_to(grid[r][0], LEFT, buff=0.35))
-            bits.add(label(f"0b{masks[r]:08b}", 18, MUTED, font=MONO).next_to(grid[r][-1], RIGHT, buff=0.35))
-        self.play(FadeIn(g), FadeIn(rows), run_time=0.7)
-        cap = self.caption("Each heater line carries one 8-bit mask: bit p means on during window p.")
-        self.play(FadeIn(bits), run_time=0.5)
+    def section_frame(self):
+        head = self.heading("1. One channel: the mask is a current waveform")
+        bar_w = 8.0
+        frame, frame_art = self.frame_bar(2.3, bar_w)
+        self.play(Create(frame), FadeIn(frame_art[1:]), run_time=0.9)
+        cap = self.caption("The sweep divides every 500 ms frame into eight windows of 62.5 ms.")
+        self.wait(1.2)
 
-        def paint(mask_list, animate=True):
-            anims = []
-            for r, m in enumerate(mask_list):
-                for w in range(FRAME_WINDOWS):
-                    on = (m >> w) & 1
-                    target = grid[r][w].copy().set_fill(ORANGE if on else CELL, 1)
-                    anims.append(Transform(grid[r][w], target))
-            return anims
+        # One heater line's mask, as eight cells aligned under the windows.
+        mask = 0b00100101
+        next_mask = 0b01001010
+        cells = cell_grid(1, FRAME_WINDOWS, w=bar_w / FRAME_WINDOWS - 0.06, h=0.4)[0]
+        strip = VGroup(*cells).move_to(frame.get_center() + DOWN * 0.75).align_to(frame, LEFT).shift(RIGHT * 0.03)
+        name = label("pwr1", 20, INK).next_to(strip, LEFT, buff=0.35)
+        bits = label(f"0b{mask:08b}", 18, MUTED, font=MONO).next_to(strip, RIGHT, buff=0.35)
+        self.play(FadeIn(strip), FadeIn(name), FadeIn(bits), run_time=0.6)
+        self.play(FadeOut(cap), run_time=0.2)
+        cap = self.caption("The line carries one 8-bit mask: bit p closes its switch for window p.")
 
-        self.play(*paint(masks), run_time=0.8)
+        def paint(m):
+            return [Transform(cells[w], cells[w].copy().set_fill(ORANGE if (m >> w) & 1 else CELL, 1)) for w in range(FRAME_WINDOWS)]
+
+        self.play(*paint(mask), run_time=0.7)
+        self.wait(1.0)
+
+        # The current axes, windows aligned with the bar above.
+        axes = Axes(x_range=[0, 500, 500], y_range=[0, 1.0, 0.5], x_length=bar_w, y_length=2.0,
+                    axis_config={"color": MUTED, "include_ticks": False},
+                    y_axis_config={"include_numbers": True, "font_size": 18, "label_constructor": ui_text, "decimal_number_config": {"num_decimal_places": 1}})
+        axes.shift(frame.get_left() - axes.c2p(0, 0) + DOWN * (frame.get_left()[1] + 2.0))
+        y_lab = label("current, A", 18, MUTED).next_to(axes.y_axis, UP, buff=0.1).align_to(axes.y_axis, LEFT)
+        self.play(Create(axes), FadeIn(y_lab), run_time=0.7)
+
+        facts = VGroup(
+            label("12 V rail: 11.7 V", 18, INK),
+            label("heater: 13 Ω", 18, INK),
+            label("I = V ÷ R = 0.9 A", 18, ORANGE),
+            label("P = V · I = 10.6 W", 18, ORANGE),
+        ).arrange(DOWN, aligned_edge=LEFT, buff=0.12).next_to(axes, RIGHT, buff=0.35).align_to(axes, UP)
+        self.play(FadeIn(facts), run_time=0.5)
+
+        # Step waveform revealed by a playhead sweeping the frame.
+        def waveform(m):
+            xs, ys = [], []
+            for w in range(FRAME_WINDOWS):
+                amps = HEATER_A if (m >> w) & 1 else 0.0
+                xs += [w * WINDOW_MS, (w + 1) * WINDOW_MS]
+                ys += [amps, amps]
+            return np.array(xs), np.array(ys)
+
+        t_tr = ValueTracker(0.0)
+
+        def partial_wave(m):
+            xs, ys = waveform(m)
+
+            def build():
+                t = t_tr.get_value()
+                keep = xs <= t
+                px, py = list(xs[keep]), list(ys[keep])
+                w = min(int(t // WINDOW_MS), FRAME_WINDOWS - 1)
+                px.append(t)
+                py.append(HEATER_A if (m >> w) & 1 else 0.0)
+                if len(px) < 2:
+                    px, py = [0, 1e-3], [py[-1], py[-1]]
+                return axes.plot_line_graph(px, py, add_vertex_dots=False, line_color=ORANGE, stroke_width=4)
+
+            return always_redraw(build)
+
+        head_line = Rectangle(width=0.06, height=frame.get_top()[1] - axes.c2p(0, 0)[1], fill_color=TEAL, fill_opacity=0.8, stroke_width=0)
+        head_line.add_updater(lambda hl: hl.move_to(frame.get_left() * [1, 0, 0] + RIGHT * t_tr.get_value() / 500 * bar_w + UP * axes.c2p(0, 0)[1], aligned_edge=DOWN + LEFT))
+        wave = partial_wave(mask)
+        self.add(head_line, wave)
+        self.play(FadeOut(cap), run_time=0.2)
+        cap = self.caption("Closed switch: 0.9 A flows. Open: nothing. There is no in-between on a line.")
+        self.play(t_tr.animate.set_value(500), run_time=4.0, rate_func=rate_functions.linear)
         self.wait(0.6)
 
-        # Playhead sweeping two frames; the staged mask latches at window 0.
-        head_line = Rectangle(width=0.06, height=bar_h + 2.9, fill_color=TEAL, fill_opacity=0.8, stroke_width=0)
-        head_line.move_to(frame.get_left() + DOWN * 1.1, aligned_edge=LEFT)
-        pos = ValueTracker(0.0)
-        head_line.add_updater(lambda m: m.move_to(frame.get_left() + RIGHT * pos.get_value() * bar_w + DOWN * 1.1, aligned_edge=LEFT))
-        self.add(head_line)
-        self.play(pos.animate.set_value(1.0), run_time=2.5, rate_func=rate_functions.linear)
+        on_count = bin(mask).count("1")
+        mean_a = on_count / FRAME_WINDOWS * HEATER_A
+        mean_line = DashedLine(axes.c2p(0, mean_a), axes.c2p(500, mean_a), color=GREEN)
+        mean_lab = label(f"frame average {on_count}/8 × 0.9 A = {mean_a:.2f} A, {on_count / FRAME_WINDOWS * HEATER_W:.1f} W", 18, GREEN).next_to(mean_line, UP, buff=0.08).align_to(mean_line, RIGHT)
+        self.play(Create(mean_line), FadeIn(mean_lab), run_time=0.6)
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("A new mask can be staged any time; it is latched at window 0 of the next frame.")
-        new_bits = VGroup(*[label(f"0b{next_masks[r]:08b}", 18, GREEN, font=MONO).move_to(bits[r]) for r in range(len(names))])
-        self.play(Transform(bits, new_bits), run_time=0.5)
-        pos.set_value(0.0)
-        self.play(*paint(next_masks), run_time=0.3)
-        self.play(pos.animate.set_value(1.0), run_time=2.5, rate_func=rate_functions.linear)
+        cap = self.caption(f"Three of eight windows closed is {on_count / FRAME_WINDOWS * 100:g} % duty: the heat delivered is the average of the waveform.")
+        self.wait(2.8)
+
+        # A new mask is staged and latched at window 0.
+        self.play(FadeOut(cap), FadeOut(mean_line), FadeOut(mean_lab), run_time=0.3)
+        cap = self.caption("A new mask can be staged any time; it takes effect at window 0 of the next frame.")
+        self.remove(wave)
+        t_tr.set_value(0.0)
+        wave = partial_wave(next_mask)
+        self.add(wave)
+        self.play(Transform(bits, label(f"0b{next_mask:08b}", 18, GREEN, font=MONO).move_to(bits)), *paint(next_mask), run_time=0.5)
+        self.play(t_tr.animate.set_value(500), run_time=4.0, rate_func=rate_functions.linear)
         head_line.clear_updaters()
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("Duty is simply on-windows ÷ 8: the loop can only ask for 0, 12.5, 25 … 100 %.")
-        duty_txt = VGroup(*[label(f"{bin(next_masks[r]).count('1') * 12.5:g} %", 18, ORANGE).next_to(bits[r], RIGHT, buff=0.3) for r in range(len(names))])
-        self.play(FadeIn(duty_txt), run_time=0.5)
+        cap = self.caption("Masks are rewritten every frame, twice a second; one line alone can only ask for eighths.")
+        self.wait(2.5)
+        self.clear_all()
+
+    # -- 2. many channels: currents add -----------------------------------
+
+    def section_currents(self):
+        head = self.heading("2. Many channels: currents add, so the budget becomes a count")
+        names = ["pwr1", "pwr11", "pwr15", "pwr9", "pwr12", "pwr14"]
+        requests = [3, 2, 4, 1, 2, 3]
+        budget_w = 40.0
+        cap_lines = int(budget_w // HEATER_W)
+        colors = [BLUE, GREEN, RED, ORANGE, PURPLE, TEAL]
+        # Everyone starting at window 0: the obvious mask, and the wrong one.
+        naive = [(1 << r) - 1 for r in requests]
+
+        grid = cell_grid(len(names), FRAME_WINDOWS, w=0.6, h=0.3, gap=0.06)
+        g = grid_group(grid).move_to(UP * 1.55 + RIGHT * 0.9)
+        rowlab = VGroup(*[label(names[r], 18, colors[r]).next_to(grid[r][0], LEFT, buff=0.3) for r in range(len(names))])
+        wlab = VGroup(*[label(f"w{w}", 18, MUTED).next_to(grid[0][w], UP, buff=0.12) for w in range(FRAME_WINDOWS)])
+        self.play(FadeIn(g), FadeIn(rowlab), FadeIn(wlab), run_time=0.6)
+
+        # The stack: each closed switch is a 0.9 A block in its window's column.
+        base_y = -2.6
+        amp_u = 0.4  # scene units per ampere
+        col_x = [grid[0][w].get_center()[0] for w in range(FRAME_WINDOWS)]
+        baseline = Line(RIGHT * (col_x[0] - 0.4) + UP * base_y, RIGHT * (col_x[-1] + 0.4) + UP * base_y, color=MUTED)
+        yt = VGroup()
+        for amps in (0.0, 1.8, 3.6, 5.4):
+            yt.add(label(f"{amps:.1f} A", 14, MUTED).move_to(RIGHT * (col_x[0] - 0.75) + UP * (base_y + amps * amp_u)))
+        stack_lab = label("supply current per window", 18, MUTED).next_to(baseline, DOWN, buff=0.55).align_to(baseline, LEFT)
+        self.play(Create(baseline), FadeIn(yt), run_time=0.5)
+        cap = self.caption("Each closed switch adds 0.9 A to its window; the rail sees the sum, window by window.")
+
+        heights = [0] * FRAME_WINDOWS
+        blocks = VGroup()
+        totals = VGroup(*[label("0", 14, MUTED).move_to(RIGHT * col_x[w] + UP * (base_y - 0.22)) for w in range(FRAME_WINDOWS)])
+        self.add(totals)
+
+        def total_text(w, color=None):
+            n = heights[w]
+            col = color or (RED if n > cap_lines else INK)
+            return label(f"{n * HEATER_A:.1f} A", 14, col).move_to(totals[w])
+
+        def add_row(r, m):
+            anims = [grid[r][w].animate.set_fill(colors[r] if (m >> w) & 1 else CELL, 1) for w in range(FRAME_WINDOWS)]
+            new_blocks = VGroup()
+            for w in range(FRAME_WINDOWS):
+                if (m >> w) & 1:
+                    b = Rectangle(width=0.54, height=HEATER_A * amp_u, fill_color=colors[r], fill_opacity=0.85, stroke_width=0)
+                    b.move_to(RIGHT * col_x[w] + UP * (base_y + heights[w] * HEATER_A * amp_u), aligned_edge=DOWN)
+                    heights[w] += 1
+                    new_blocks.add(b)
+            blocks.add(new_blocks)
+            anims += [FadeIn(new_blocks, shift=UP * 0.15)]
+            anims += [Transform(totals[w], total_text(w, INK)) for w in range(FRAME_WINDOWS)]
+            return anims
+
+        for r in range(len(names)):
+            self.play(*add_row(r, naive[r]), run_time=0.55)
+            self.wait(0.15)
+        self.wait(0.8)
+
+        # The budget, as a line the stack must stay under.
+        ceiling_a = budget_w / SUPPLY_V
+        ceiling = DashedLine(RIGHT * (col_x[0] - 0.4) + UP * (base_y + ceiling_a * amp_u), RIGHT * (col_x[-1] + 0.4) + UP * (base_y + ceiling_a * amp_u), color=RED)
+        ceiling_lab = label(f"{budget_w:.0f} W supply budget = {ceiling_a:.1f} A", 16, RED).next_to(ceiling, RIGHT, buff=0.15)
+        self.play(Create(ceiling), FadeIn(ceiling_lab), run_time=0.6)
+        over = [w for w in range(FRAME_WINDOWS) if heights[w] > cap_lines]
+        self.play(*[Transform(totals[w], total_text(w)) for w in over], run_time=0.4)
+        self.play(FadeOut(cap), run_time=0.2)
+        cap = self.caption(f"Everyone starting at window 0 piles {heights[0] * HEATER_A:.1f} A, {heights[0] * HEATER_W:.0f} W, into one window and leaves four empty.")
+        self.wait(2.8)
+        self.play(FadeOut(cap), run_time=0.2)
+        cap = self.caption("The loop knows every channel: 13 Ω on 11.7 V is 0.9 A and 10.6 W, measured, not assumed.")
         self.wait(2.5)
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("The loop rewrites every heater's mask once per frame, two times a second, from fresh RTD readings.")
+        rule = label(f"cap = ⌊{budget_w:.0f} W ÷ {HEATER_W} W⌋ = {cap_lines} lines in any window", 22, WHITE).move_to(UP * 0.05)
+        self.play(FadeIn(rule), run_time=0.5)
+        cap = self.caption("So a watt budget turns into a count the scheduler can enforce one window at a time.")
+        self.wait(2.5)
+
+        # Reflow under the cap: same windows per heater, spread across the frame.
+        masks, _, _ = schedule_frame(requests, cap_lines, rotate=0)
+        self.play(FadeOut(blocks), run_time=0.4)
+        heights = [0] * FRAME_WINDOWS
+        blocks = VGroup()
+        anims = []
+        for r in range(len(names)):
+            anims += add_row(r, masks[r])
+        self.play(FadeOut(cap), run_time=0.2)
+        cap = self.caption(f"Same 15 windows, same heat per frame, never more than {cap_lines} lines ({cap_lines * HEATER_W:.0f} W) in any window.")
+        self.play(*anims, run_time=1.2)
         self.wait(2.5)
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("Finer control than eighths comes from varying the count frame to frame; that is section 3.")
-        self.wait(2.5)
+        cap = self.caption("The module's own limit is 125 W, eleven lines; the budget here is the bench supply's, and the cap is how it is kept.")
+        self.wait(3.0)
         self.clear_all()
 
     # -- 2. RTD -> PI --------------------------------------------------------
 
     def section_pi(self):
-        head = self.heading("2. RTD → PI: temperature error to duty")
+        head = self.heading("3. RTD → PI: temperature error to duty")
         setpoint, kp, ki = 45.0, 20.0, 20.0 / 600.0
         # Every 4th sample (2 s of plant time) is plenty for the plot and the bars.
         data = simulate(setpoint, kp, ki, minutes=24.0)[::4]
@@ -419,15 +559,21 @@ class ThermalControl(Scene):
 
     # -- 3. duty -> windows with carry --------------------------------------
 
-    def strip(self, lit, w=0.3, h=0.28, gap=0.04):
-        """One frame's eight windows as a small strip with the first `lit` on."""
+    def strip(self, lit, w=0.3, h=0.28, gap=0.04, leftover=0.0):
+        """One frame's eight windows as a small strip with the first `lit` on,
+        and the leftover part of a window drawn in purple inside the next cell."""
         cells = cell_grid(1, FRAME_WINDOWS, w=w, h=h, gap=gap)[0]
         for i, cell in enumerate(cells):
             cell.set_fill(ORANGE if i < lit else CELL, 1)
-        return VGroup(*cells)
+        group = VGroup(*cells)
+        if leftover > 0 and lit < FRAME_WINDOWS:
+            part = Rectangle(width=max(1e-3, leftover * w), height=h * 0.7, fill_color=PURPLE, fill_opacity=0.9, stroke_width=0)
+            part.move_to(cells[lit].get_left(), aligned_edge=LEFT)
+            group.add(part)
+        return group
 
     def section_carry(self):
-        head = self.heading("3. Duty → windows: the deficit ledger")
+        head = self.heading("4. Duty → windows: the deficit ledger")
         duty = 30.0
 
         # -- A. the problem ------------------------------------------------
@@ -458,88 +604,80 @@ class ThermalControl(Scene):
         self.wait(1.0)
         self.play(FadeOut(q), FadeOut(naive), FadeOut(tally), run_time=0.5)
 
-        # -- C. the ledger --------------------------------------------------------
-        rule = label("keep a ledger: carry the fraction a frame could not hold into the next frame", 24, GREEN).move_to(UP * 1.75)
+        # -- C. the leftover, drawn as part of a window inside the strip ---------------
+        rule = label("carry the leftover part of a window into the next frame", 24, GREEN).move_to(UP * 1.75)
         self.play(FadeIn(rule), run_time=0.5)
         self.wait(0.8)
-        self.play(FadeOut(intro), rule.animate.next_to(head, DOWN, buff=0.3), run_time=0.5)
+        self.play(FadeOut(intro), rule.animate.next_to(head, DOWN, buff=0.25), run_time=0.5)
+        plain = VGroup(
+            label("every frame adds 2.4 windows to what the heater is owed", 18, MUTED),
+            label("whole windows switch on; the part of a window left over waits for the next frame", 18, MUTED),
+        ).arrange(DOWN, buff=0.05).next_to(rule, DOWN, buff=0.1)
+        self.play(FadeIn(plain), run_time=0.4)
 
-        cols = ["frame", "carry in", "owed", "granted", "carry out"]
-        col_x = [-6.3, -4.9, -3.6, -2.3, -1.0]
-        hdr = VGroup(*[label(c, 18, MUTED).move_to(RIGHT * x + UP * 1.55) for c, x in zip(cols, col_x)])
-        formula = label("owed = 2.4 + carry in;  granted = ⌊owed⌋;  carry out = owed − granted", 18, MUTED).next_to(rule, DOWN, buff=0.15)
-        self.play(FadeIn(hdr), FadeIn(formula), run_time=0.4)
+        cw, ch, gap = 0.62, 0.34, 0.05
+        pitch = cw + gap
+        x0 = -4.3  # left edge of every strip
+        legend = VGroup(
+            VGroup(Rectangle(width=0.3, height=0.2, fill_color=ORANGE, fill_opacity=1, stroke_width=0), label("window switched on", 14, INK)).arrange(RIGHT, buff=0.1),
+            VGroup(Rectangle(width=0.3, height=0.2, fill_color=PURPLE, fill_opacity=0.9, stroke_width=0), label("part of a window left over", 14, INK)).arrange(RIGHT, buff=0.1),
+        ).arrange(RIGHT, buff=0.5).move_to(UP * 1.4 + RIGHT * 0.3)
+        self.play(FadeIn(legend), run_time=0.3)
 
-        # The ledger gauge: one window tall.
-        gauge_h = 2.2
-        gauge_x, gauge_y0 = 4.3, -1.05
-        track = Rectangle(width=0.55, height=gauge_h, stroke_color=MUTED, stroke_width=1, fill_color=CELL, fill_opacity=1)
-        track.move_to(RIGHT * gauge_x + UP * gauge_y0, aligned_edge=DOWN)
-        one = DashedLine(track.get_corner(UP + LEFT) + LEFT * 0.2, track.get_corner(UP + RIGHT) + RIGHT * 0.2, color=RED)
-        one_lab = label("1 window: never reached", 14, RED).next_to(one, UP, buff=0.05)
-        zero_lab = label("0", 14, MUTED).next_to(track, DOWN, buff=0.05)
-        gauge_lab = label("deficit ledger", 18, PURPLE).next_to(zero_lab, DOWN, buff=0.05)
-        fill = Rectangle(width=0.55, height=1e-3, fill_color=PURPLE, fill_opacity=0.9, stroke_width=0).move_to(track.get_bottom(), aligned_edge=DOWN)
-        self.play(FadeIn(track), FadeIn(one), FadeIn(one_lab), FadeIn(zero_lab), FadeIn(gauge_lab), run_time=0.5)
-        self.add(fill)
-
-        # Running totals on the far right.
-        tot_x = 5.9
-        asked_lab = label("asked", 16, MUTED).move_to(RIGHT * tot_x + UP * 0.9)
-        deliv_lab = label("delivered", 16, MUTED).move_to(RIGHT * tot_x + UP * 0.1)
-        diff_lab = label("asked − delivered", 14, MUTED).move_to(RIGHT * tot_x + DOWN * 0.7)
-        asked_num = label("0.0", 22, INK).next_to(asked_lab, DOWN, buff=0.05)
-        deliv_num = label("0", 22, ORANGE).next_to(deliv_lab, DOWN, buff=0.05)
-        diff_num = label("0.0", 22, PURPLE).next_to(diff_lab, DOWN, buff=0.05)
-        self.play(FadeIn(asked_lab), FadeIn(deliv_lab), FadeIn(diff_lab), FadeIn(asked_num), FadeIn(deliv_num), FadeIn(diff_num), run_time=0.4)
+        def span(y, start, end, color, opacity=0.9):
+            """A bar from window position `start` to `end`, in windows, over a strip at height y."""
+            width = max(1e-3, (end - start) * pitch)
+            rect = Rectangle(width=width, height=ch * 0.7, fill_color=color, fill_opacity=opacity, stroke_width=0)
+            rect.move_to(RIGHT * (x0 + start * pitch) + UP * y, aligned_edge=LEFT)
+            return rect
 
         carry = 0.0
-        rows = VGroup()
         total = 0
+        tail = None
         for f in range(6):
             windows, new_carry = windows_with_carry(duty, carry)
             owed = round(duty / 100 * 8 + carry, 9)
-            y = 1.05 - f * 0.5
-            row = VGroup(
-                label(f"{f + 1}", 18, INK).move_to(RIGHT * col_x[0] + UP * y),
-                label(f"{carry:.1f}", 18, PURPLE).move_to(RIGHT * col_x[1] + UP * y),
-                label(f"{owed:.1f}", 18, INK).move_to(RIGHT * col_x[2] + UP * y),
-                label(f"{windows}", 20, ORANGE).move_to(RIGHT * col_x[3] + UP * y),
-                label(f"{new_carry:.1f}", 18, PURPLE).move_to(RIGHT * col_x[4] + UP * y),
-            )
-            cells = self.strip(windows, w=0.26, h=0.26).move_to(RIGHT * 1.45 + UP * y)
+            y = 0.9 - f * 0.47
+            cells = cell_grid(1, FRAME_WINDOWS, w=cw, h=ch, gap=gap)[0]
+            strip = VGroup(*cells).move_to(UP * y).align_to(RIGHT * x0, LEFT)
+            flab = label(f"frame {f + 1}", 16, MUTED).next_to(strip, LEFT, buff=0.25)
+            self.play(FadeIn(strip), FadeIn(flab), run_time=0.25)
+            # The leftover slides down from the end of the last strip to the start of
+            # this one, leaving a faint mark behind so every row still shows its own.
+            carried = None
+            if carry > 0 and tail is not None:
+                carried = tail.copy()
+                self.add(carried)
+                self.play(Transform(carried, span(y, 0.0, carry, PURPLE)), tail.animate.set_opacity(0.35), run_time=0.5)
+            # This frame's 2.4 windows are added after it.
+            fresh = span(y, carry, carry + 1e-3, ORANGE)
+            self.add(fresh)
+            self.play(Transform(fresh, span(y, carry, owed, ORANGE)), run_time=0.6)
+            self.wait(0.2)
+            # Whole windows switch on; whatever is left of a window stays purple.
+            snap = [cells[w].animate.set_fill(ORANGE, 1) for w in range(windows)]
+            new_tail = span(y, windows, owed, PURPLE) if new_carry > 0 else None
+            fades = [FadeOut(fresh)] + ([FadeOut(carried)] if carried is not None else [])
+            shows = [FadeIn(new_tail)] if new_tail is not None else []
             total += windows
-            # owed, then the whole windows that fit, then the fraction left over
-            self.play(FadeIn(row[:3]), run_time=0.3)
-            self.play(FadeIn(row[3]), FadeIn(cells), run_time=0.3)
-            new_fill = Rectangle(width=0.55, height=max(1e-3, new_carry * gauge_h), fill_color=PURPLE, fill_opacity=0.9, stroke_width=0).move_to(track.get_bottom(), aligned_edge=DOWN)
-            self.play(
-                FadeIn(row[4]),
-                Transform(fill, new_fill),
-                Transform(asked_num, label(f"{(f + 1) * 2.4:.1f}", 22, INK).move_to(asked_num)),
-                Transform(deliv_num, label(f"{total}", 22, ORANGE).move_to(deliv_num)),
-                Transform(diff_num, label(f"{(f + 1) * 2.4 - total:.1f}", 22, PURPLE).move_to(diff_num)),
-                run_time=0.4,
-            )
+            words = VGroup(label(f"{windows} on", 18, ORANGE), label(f"{new_carry:.1f} of a window left over" if new_carry > 0 else "nothing left over", 16, PURPLE)).arrange(RIGHT, buff=0.25)
+            words.next_to(strip, RIGHT, buff=0.3)
+            self.play(*snap, *fades, *shows, FadeIn(words), run_time=0.5)
+            tail = new_tail
             if f == 1:
-                hint = label("0.8 owed, still under a whole window: nothing extra yet", 16, PURPLE).move_to(DOWN * 2.5 + LEFT * 2.5)
-                self.play(FadeIn(hint), run_time=0.3)
-                self.wait(1.0)
-                self.play(FadeOut(hint), run_time=0.2)
-            if f == 2:
-                hint = label("2.4 + 0.8 = 3.2: a third window is granted, 0.2 stays on the ledger", 16, PURPLE).move_to(DOWN * 2.5 + LEFT * 2.5)
+                hint = label("0.4 + 2.4 = 2.8: still only two whole windows; 0.8 of a window waits", 16, PURPLE).to_edge(DOWN, buff=0.95)
                 self.play(FadeIn(hint), run_time=0.3)
                 self.wait(1.2)
                 self.play(FadeOut(hint), run_time=0.2)
-            if f < 5:
-                arrow = Arrow(row[4].get_bottom(), RIGHT * col_x[1] + UP * (y - 0.5) + UP * 0.13, color=PURPLE, stroke_width=2, buff=0.04, max_tip_length_to_length_ratio=0.2)
-                self.play(Create(arrow), run_time=0.2)
-                rows.add(arrow)
-            rows.add(row, cells)
+            if f == 2:
+                hint = label("0.8 + 2.4 = 3.2: the leftover completes a window, so three switch on; 0.2 waits", 16, PURPLE).to_edge(DOWN, buff=0.95)
+                self.play(FadeIn(hint), run_time=0.3)
+                self.wait(1.4)
+                self.play(FadeOut(hint), run_time=0.2)
             carry = new_carry
         self.wait(0.6)
-        inv = label("asked − delivered is exactly the ledger, so the deficit is always below one window", 20, GREEN).to_edge(DOWN, buff=0.95)
-        avg = label(f"6 frames: {total} delivered for 14.4 asked; the first 5 were 12 for 12.0, exactly 30 %", 20, INK).to_edge(DOWN, buff=0.45)
+        inv = label("the leftover is never a whole window: the moment it would be, that window switches on", 20, GREEN).to_edge(DOWN, buff=0.95)
+        avg = label(f"after 5 frames: 12 windows on for 12.0 asked, exactly 30 %; after 6: {total} for 14.4", 20, INK).to_edge(DOWN, buff=0.45)
         self.play(FadeIn(inv), run_time=0.5)
         self.wait(1.5)
         self.play(FadeIn(avg), run_time=0.5)
@@ -549,8 +687,8 @@ class ThermalControl(Scene):
         # -- D. the rules that keep it bounded -------------------------------------
         rules = VGroup(
             VGroup(label("one ledger per heater line", 24, WHITE), label("one PI per RTD group hands every heater the same 2.4; each keeps its own fraction", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
-            VGroup(label("the ledger only remembers fractions", 24, WHITE), label("carry out = owed − granted, kept in [0, 1): never a whole window, so it cannot wind up", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
-            VGroup(label("what a frame cannot hold is forgotten, not banked", 24, WHITE), label("at 100 % nothing is owed; windows the scheduler clips go to the PI (section 5), not here", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
+            VGroup(label("the ledger only remembers part of a window", 24, WHITE), label("it is always less than one whole window, so it can never build up into a surge", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
+            VGroup(label("what a frame cannot hold is forgotten, not banked", 24, WHITE), label("at 100 % nothing is owed; windows the scheduler clips go to the PI (section 6), not here", 18, MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.06),
         ).arrange(DOWN, aligned_edge=LEFT, buff=0.45).next_to(head, DOWN, buff=0.5).to_edge(LEFT, buff=0.7)
         for r in rules:
             self.play(FadeIn(r, shift=RIGHT * 0.2), run_time=0.5)
@@ -567,13 +705,13 @@ class ThermalControl(Scene):
         for f in range(10):
             windows, carry = windows_with_carry(10.0, carry)
             got.append(windows)
-            s = self.strip(windows, w=0.13, h=0.26, gap=0.02).move_to(RIGHT * (-5.4 + f * 1.2) + UP * 0.6)
+            s = self.strip(windows, w=0.13, h=0.26, gap=0.02, leftover=carry).move_to(RIGHT * (-5.4 + f * 1.2) + UP * 0.6)
             fl = label(f"{f + 1}", 14, MUTED).next_to(s, UP, buff=0.08)
             c = label(f"{carry:.1f}", 16, PURPLE).next_to(s, DOWN, buff=0.1)
             strips.add(VGroup(s, fl))
             ledger.add(c)
             self.play(FadeIn(strips[-1]), FadeIn(c), run_time=0.22)
-        lab = label("ledger after each frame", 16, PURPLE).next_to(ledger, DOWN, buff=0.15)
+        lab = label("part of a window left over after each frame", 16, PURPLE).next_to(ledger, DOWN, buff=0.15)
         result = label(f"{sum(got)} windows in 10 frames = {sum(got) / 10:g} per frame = {sum(got) / 80 * 100:g} %", 24, GREEN).move_to(DOWN * 1.4)
         self.play(FadeIn(lab), run_time=0.3)
         self.play(FadeIn(result), run_time=0.5)
@@ -584,12 +722,12 @@ class ThermalControl(Scene):
     # -- 4. scheduling under a cap ------------------------------------------
 
     def section_schedule(self):
-        head = self.heading("4. Placing windows under a power cap")
+        head = self.heading("5. Placing windows under the cap")
         names = ["pwr1", "pwr11", "pwr15", "pwr9", "pwr12", "pwr14"]
         requests = [3, 2, 4, 1, 2, 3]
         cap = 3
         note = VGroup(
-            label(f"budget 40 W ÷ {HEATER_W} W per heater  →  cap = 3 lines in any window (32 W)", 24, WHITE),
+            label(f"the cap from section 2: 3 lines in any window (40 W ÷ {HEATER_W} W per heater)", 24, WHITE),
             label("each round, every heater still owed a window takes the least-loaded free one", 20, MUTED),
         ).arrange(DOWN, buff=0.12).next_to(head, DOWN, buff=0.3)
         self.play(FadeIn(note), run_time=0.6)
@@ -656,7 +794,7 @@ class ThermalControl(Scene):
     # -- 5. clipping and the integrator hold --------------------------------
 
     def section_clip(self):
-        head = self.heading("5. When the cap clips, pause the integrator")
+        head = self.heading("6. When the cap clips, pause the integrator")
         setpoint, kp, ki = 45.0, 20.0, 20.0 / 600.0
         squeeze = (30.0, 60.0)
         minutes = 100.0
@@ -739,7 +877,7 @@ class ThermalControl(Scene):
     # -- 6. the loop --------------------------------------------------------
 
     def section_loop(self):
-        head = self.heading("6. The loop, every 500 ms")
+        head = self.heading("7. The loop, every 500 ms")
         steps = [
             ("RTD read", "sweep frame, °C per lane", GREEN),
             ("PI per group", "error → duty %", BLUE),
