@@ -9,9 +9,11 @@ MONOCLE fine-guidance tracking, and the zodiacal plate solver.
 - Python (version pinned in `.python-version`)
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
 - A LaTeX toolchain (some scenes use `MathTex`) plus `ffmpeg`, `libcairo2-dev`,
-  `libpango1.0-dev`. On Debian/Ubuntu:
+  `libpango1.0-dev`, and the Noto Sans and DejaVu fonts the text scenes ask for
+  (Pango silently substitutes another face if they are missing). On Debian/Ubuntu:
   ```bash
   sudo apt-get install ffmpeg dvisvgm libcairo2-dev libpango1.0-dev \
+    fonts-noto-core fonts-dejavu-core \
     texlive texlive-latex-extra texlive-fonts-extra \
     texlive-latex-recommended texlive-science texlive-fonts-recommended tipa
   ```
