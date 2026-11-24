@@ -328,7 +328,8 @@ class ThermalControl(Scene):
     def section_pi(self):
         head = self.heading("2. RTD → PI: temperature error to duty")
         setpoint, kp, ki = 45.0, 20.0, 20.0 / 600.0
-        data = simulate(setpoint, kp, ki, minutes=24.0)
+        # Every 4th sample (2 s of plant time) is plenty for the plot and the bars.
+        data = simulate(setpoint, kp, ki, minutes=24.0)[::4]
         t = data[:, 0]
         temp = data[:, 1]
         duty = data[:, 2]
@@ -538,17 +539,20 @@ class ThermalControl(Scene):
         def partial(ax, data, col, idx, scale=1.0):
             return always_redraw(lambda: ax.plot_line_graph(data[: int(k_tr.get_value()), 0], scale * data[: int(k_tr.get_value()), idx], add_vertex_dots=False, line_color=col, stroke_width=3))
 
-        wind_t = partial(ax_t, wind, RED, 1)
-        hold_t = partial(ax_t, hold, GREEN, 1)
-        wind_i = partial(ax_i, wind, RED, 4, ki)
-        hold_i = partial(ax_i, hold, GREEN, 4, ki)
+        # Plot every 8th sample (4 s of plant time): the curves are smooth at
+        # that spacing and the per-frame redraw cost drops eightfold.
+        wind_plot, hold_plot = wind[::8], hold[::8]
+        wind_t = partial(ax_t, wind_plot, RED, 1)
+        hold_t = partial(ax_t, hold_plot, GREEN, 1)
+        wind_i = partial(ax_i, wind_plot, RED, 4, ki)
+        hold_i = partial(ax_i, hold_plot, GREEN, 4, ki)
         legend = VGroup(
             VGroup(Line(ORIGIN, RIGHT * 0.5, color=RED, stroke_width=4), label("integrate anyway: counts error the heater was never allowed to act on", 18, INK)).arrange(RIGHT, buff=0.15),
             VGroup(Line(ORIGIN, RIGHT * 0.5, color=GREEN, stroke_width=4), label("hold while clipped and still below setpoint", 18, INK)).arrange(RIGHT, buff=0.15),
         ).arrange(DOWN, aligned_edge=LEFT, buff=0.1).to_edge(DOWN, buff=0.35)
         self.add(wind_t, hold_t, wind_i, hold_i)
         self.play(FadeIn(legend), run_time=0.4)
-        n = len(hold)
+        n = len(hold_plot)
         self.play(k_tr.animate.set_value(n - 1), run_time=9.0, rate_func=rate_functions.linear)
         lift = int(squeeze[1] * 60 / 0.5)
         verdict = label(
