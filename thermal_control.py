@@ -28,6 +28,7 @@ import math
 import numpy as np
 from manim import (
     BLACK,
+    DEFAULT_FONT_SIZE,
     DOWN,
     GREY,
     LEFT,
@@ -53,7 +54,9 @@ from manim import (
     VGroup,
     Write,
     always_redraw,
+    config,
     rate_functions,
+    tempconfig,
 )
 
 # Palette shared with the tracking-test-bench dashboards.
@@ -190,17 +193,28 @@ MONO = "DejaVu Sans Mono"
 MAX_TEXT_W = 13.0
 
 
+# Pango rounds glyph advances to whole pixels at the size it is asked for, so
+# small text comes out with uneven letter spacing. Laying it out this many
+# times larger and shrinking the result keeps the spacing even.
+TEXT_OVERSAMPLE = 4
+
+
 def ui_text(text, **kw):
     """Text in the scene's sans font; used directly and as the constructor
     for axis numbers and DecimalNumber so every glyph comes from one face."""
     kw.setdefault("font", FONT)
-    return Text(text, **kw)
+    size = kw.pop("font_size", DEFAULT_FONT_SIZE)
+    # Pango wraps lines at the configured pixel width, so the oversampled
+    # layout needs a proportionally wider canvas or long captions fold.
+    canvas = {"pixel_width": config.pixel_width * TEXT_OVERSAMPLE * 2, "pixel_height": config.pixel_height * TEXT_OVERSAMPLE}
+    with tempconfig(canvas):
+        mob = Text(text, font_size=size * TEXT_OVERSAMPLE, **kw)
+    return mob.scale(1 / TEXT_OVERSAMPLE)
 
 
 def label(text, size=24, color=INK, **kw):
     """A text run that is never wider than the frame."""
-    kw.setdefault("font", FONT)
-    mob = Text(text, font_size=size, color=color, **kw)
+    mob = ui_text(text, font_size=size, color=color, **kw)
     if mob.width > MAX_TEXT_W:
         mob.scale_to_fit_width(MAX_TEXT_W)
     return mob
