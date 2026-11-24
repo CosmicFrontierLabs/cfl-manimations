@@ -371,7 +371,12 @@ class ThermalControl(Scene):
         on_count = bin(mask).count("1")
         mean_a = on_count / FRAME_WINDOWS * HEATER_A
         mean_line = DashedLine(axes.c2p(0, mean_a), axes.c2p(500, mean_a), color=GREEN)
-        mean_lab = label(f"frame average {on_count}/8 × 0.9 A = {mean_a:.2f} A, {on_count / FRAME_WINDOWS * HEATER_W:.1f} W", 18, GREEN).next_to(mean_line, UP, buff=0.08).align_to(mean_line, RIGHT)
+        # Kept out of the plot so the waveform cannot strike through it.
+        mean_lab = VGroup(
+            label("frame average", 16, GREEN),
+            label(f"{on_count}/8 × 0.9 A = {mean_a:.2f} A", 16, GREEN),
+            label(f"{on_count}/8 × 10.6 W = {on_count / FRAME_WINDOWS * HEATER_W:.1f} W", 16, GREEN),
+        ).arrange(DOWN, aligned_edge=LEFT, buff=0.06).next_to(facts, DOWN, buff=0.25).align_to(facts, LEFT)
         self.play(Create(mean_line), FadeIn(mean_lab), run_time=0.6)
         self.play(FadeOut(cap), run_time=0.2)
         cap = self.caption(f"Three of eight windows closed is {on_count / FRAME_WINDOWS * 100:g} % duty: the heat delivered is the average of the waveform.")
@@ -465,7 +470,7 @@ class ThermalControl(Scene):
         cap = self.caption("The loop knows every channel: 13 Ω on 11.7 V is 0.9 A and 10.6 W, measured, not assumed.")
         self.wait(2.5)
         self.play(FadeOut(cap), run_time=0.2)
-        rule = label(f"cap = ⌊{budget_w:.0f} W ÷ {HEATER_W} W⌋ = {cap_lines} lines in any window", 22, WHITE).move_to(UP * 0.05)
+        rule = label(f"{budget_w:.0f} W ÷ {HEATER_W} W = {budget_w / HEATER_W:.2f}, rounded down: at most {cap_lines} lines in any window", 22, WHITE).move_to(UP * 0.05)
         self.play(FadeIn(rule), run_time=0.5)
         cap = self.caption("So a watt budget turns into a count the scheduler can enforce one window at a time.")
         self.wait(2.5)
