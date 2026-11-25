@@ -9,9 +9,11 @@ MONOCLE fine-guidance tracking, and the zodiacal plate solver.
 - Python (version pinned in `.python-version`)
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
 - A LaTeX toolchain (some scenes use `MathTex`) plus `ffmpeg`, `libcairo2-dev`,
-  `libpango1.0-dev`. On Debian/Ubuntu:
+  `libpango1.0-dev`, and the Noto Sans and DejaVu fonts the text scenes ask for
+  (Pango silently substitutes another face if they are missing). On Debian/Ubuntu:
   ```bash
   sudo apt-get install ffmpeg dvisvgm libcairo2-dev libpango1.0-dev \
+    fonts-noto-core fonts-dejavu-core \
     texlive texlive-latex-extra texlive-fonts-extra \
     texlive-latex-recommended texlive-science texlive-fonts-recommended tipa
   ```
@@ -88,6 +90,37 @@ the geometric hash code, and the kd-tree nearest-neighbour match.
 
 ```bash
 uv run manim -pql zodiacal_solver.py ZodiacalSolver
+```
+
+### NSV-502 Heater Control (`thermal_control.py`)
+
+Walks the window-mask heater loop that `pm_mask_loop` runs on the NSV-502 personality
+module, in the order the data flows every 500 ms frame:
+
+1. The frame: eight 62.5 ms windows, one mask bit per window per heater line, staged any
+   time and latched at window 0, drawn as the current waveform of one line.
+2. Many channels: each line's on/off sequence scaled to its own power (the loop knows every
+   resistance), summed per window into the supply's power envelope, and the line cap that
+   keeps that envelope under the budget.
+3. RTD to PI: temperature error to duty percentage, with the integral term bounded to
+   the actuator range.
+4. Duty to windows with a balance: the part of a window a heater is owed or was granted
+   early is carried into the next frame and the request rounds at half a window, so 30 %
+   really is 2.4 windows on average and the balance stays within half a window either way.
+5. Scheduling under a power cap: whole windows placed round-robin into the least-loaded
+   window, never above the cap of lines per window, rotated frame to frame.
+6. Clipping and integrator pause: when the cap grants less than asked, the integrator holds
+   instead of counting error the heater was never allowed to act on.
+7. The closed loop.
+
+The control math is a direct port of the `heater-schedule` crate in `tracking-test-bench`,
+so the numbers on screen are the ones the hardware loop produces. No LaTeX is needed for
+this scene.
+
+- `ThermalControl` — the full walkthrough (about 3 min)
+
+```bash
+uv run manim -pql thermal_control.py ThermalControl
 ```
 
 ## Supporting Scripts (not manim scenes)
