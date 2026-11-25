@@ -51,6 +51,7 @@ from manim import (
     Scene,
     Text,
     Transform,
+    TransformFromCopy,
     ValueTracker,
     VGroup,
     Write,
@@ -422,92 +423,142 @@ class ThermalControl(Scene):
         self.wait(2.5)
         self.clear_all()
 
-    # -- 2. many channels: currents add -----------------------------------
+    # -- 2. many channels: powers add -------------------------------------
 
     def section_currents(self):
-        head = self.heading("2. Many channels: currents add")
+        head = self.heading("2. Many channels: powers add")
         names = ["pwr1", "pwr11", "pwr15", "pwr9", "pwr12", "pwr14"]
+        ohms = [13, 16, 20, 13, 26, 15]
+        # P = V² / R on the 11.7 V rail; 13 Ω is the measured bench heater.
+        watts = [HEATER_W if r == 13 else round(SUPPLY_V**2 / r, 1) for r in ohms]
         requests = [3, 2, 4, 1, 2, 3]
         budget_w = 40.0
         cap_lines = int(budget_w // HEATER_W)
         colors = [BLUE, GREEN, RED, ORANGE, PURPLE, TEAL]
         # Everyone starting at window 0: the obvious mask, and the wrong one.
         naive = [(1 << r) - 1 for r in requests]
+        n = len(names)
 
-        grid = cell_grid(len(names), FRAME_WINDOWS, w=0.6, h=0.3, gap=0.06)
-        g = grid_group(grid).move_to(UP * 1.55 + RIGHT * 0.9)
-        rowlab = VGroup(*[label(names[r], 18, colors[r]).next_to(grid[r][0], LEFT, buff=0.3) for r in range(len(names))])
-        wlab = VGroup(*[label(f"w{w}", 18, MUTED).next_to(grid[0][w], UP, buff=0.12) for w in range(FRAME_WINDOWS)])
-        self.play(FadeIn(g), FadeIn(rowlab), FadeIn(wlab), run_time=0.6)
+        # The frame along the top; every lane below shares its window columns.
+        bar_w = 8.0
+        frame, frame_art = self.frame_bar(2.45, bar_w, bar_h=0.4)
+        frame_art.shift(RIGHT * 2.0)
+        col_x0 = frame.get_left()[0]
+        win_w = bar_w / FRAME_WINDOWS
+        self.play(Create(frame), FadeIn(frame_art[1:]), run_time=0.8)
+        cap = self.caption("Six lines share the same eight windows.")
 
-        # The stack: each closed switch is a 0.9 A block in its window's column.
-        base_y = -2.6
-        amp_u = 0.4  # scene units per ampere
-        col_x = [grid[0][w].get_center()[0] for w in range(FRAME_WINDOWS)]
-        baseline = Line(RIGHT * (col_x[0] - 0.4) + UP * base_y, RIGHT * (col_x[-1] + 0.4) + UP * base_y, color=MUTED)
-        yt = VGroup()
-        for amps in (0.0, 1.8, 3.6, 5.4):
-            yt.add(label(f"{amps:.1f} A", 14, MUTED).move_to(RIGHT * (col_x[0] - 0.75) + UP * (base_y + amps * amp_u)))
-        stack_lab = label("supply current per window", 18, MUTED).next_to(baseline, DOWN, buff=0.55).align_to(baseline, LEFT)
-        self.play(Create(baseline), FadeIn(yt), run_time=0.5)
-        cap = self.caption("Each closed switch adds 0.9 A to its window.")
+        # One power lane per line, each step scaled to that line's own power.
+        lane_h = 0.34  # height of a 10.6 W step
+        pitch = 0.42
+        lane_y = [1.95 - i * pitch for i in range(n)]
+        name_col = VGroup(*[label(names[i], 16, colors[i]).move_to(LEFT * 6.5 + UP * (lane_y[i] + lane_h / 2), aligned_edge=LEFT) for i in range(n)])
+        ohm_col = VGroup(*[label(f"{ohms[i]} Ω", 16, INK).move_to(LEFT * 4.4 + UP * (lane_y[i] + lane_h / 2), aligned_edge=RIGHT) for i in range(n)])
+        watt_col = VGroup(*[label(f"{watts[i]:.1f} W", 16, colors[i]).move_to(LEFT * 2.35 + UP * (lane_y[i] + lane_h / 2), aligned_edge=RIGHT) for i in range(n)])
+        baselines = VGroup(*[Line(RIGHT * col_x0 + UP * lane_y[i], RIGHT * (col_x0 + bar_w) + UP * lane_y[i], stroke_color=MUTED, stroke_width=1) for i in range(n)])
+        self.play(FadeIn(name_col), FadeIn(ohm_col), FadeIn(baselines), run_time=0.6)
+        cap = self.caption("Every heater has its own resistance.")
+        self.wait(1.6)
+        self.play(FadeIn(watt_col, shift=RIGHT * 0.2), run_time=0.5)
+        cap = self.caption("Power on the 11.7 V rail: P = V² ÷ R.")
+        self.wait(2.0)
 
-        heights = [0] * FRAME_WINDOWS
-        blocks = VGroup()
-        totals = VGroup(*[label("0", 14, MUTED).move_to(RIGHT * col_x[w] + UP * (base_y - 0.22)) for w in range(FRAME_WINDOWS)])
+        def step_rect(row, w, width_ms=WINDOW_MS):
+            r = Rectangle(width=max(width_ms / 500 * bar_w, 1e-3), height=watts[row] / HEATER_W * lane_h, fill_color=colors[row], fill_opacity=0.85, stroke_width=0)
+            r.move_to(RIGHT * (col_x0 + w * win_w) + UP * lane_y[row], aligned_edge=DOWN + LEFT)
+            return r
+
+        def static_lane(row, mask):
+            return VGroup(*[step_rect(row, w) for w in range(FRAME_WINDOWS) if (mask >> w) & 1])
+
+        # The on/off sequence of every lane revealed by one playhead.
+        t_tr = ValueTracker(0.0)
+
+        def sweeping_lane(row, mask):
+            def build():
+                t = t_tr.get_value()
+                g = VGroup()
+                for w in range(FRAME_WINDOWS):
+                    start = w * WINDOW_MS
+                    if (mask >> w) & 1 and t > start:
+                        g.add(step_rect(row, w, min(t, start + WINDOW_MS) - start))
+                return g
+
+            return always_redraw(build)
+
+        head_line = Rectangle(width=0.06, height=frame.get_top()[1] - lane_y[-1], fill_color=TEAL, fill_opacity=0.8, stroke_width=0)
+        head_line.add_updater(lambda hl: hl.move_to(RIGHT * (col_x0 + t_tr.get_value() / 500 * bar_w) + UP * lane_y[-1], aligned_edge=DOWN + LEFT))
+        sweeps = [sweeping_lane(i, naive[i]) for i in range(n)]
+        self.add(head_line, *sweeps)
+        cap = self.caption("Closed: that line's power. Open: nothing.")
+        self.play(t_tr.animate.set_value(500), run_time=4.0, rate_func=rate_functions.linear)
+        head_line.clear_updaters()
+        self.remove(head_line, *sweeps)
+        lanes = [static_lane(i, naive[i]) for i in range(n)]
+        self.add(*lanes)
+        self.wait(0.4)
+
+        # The total: each lane's step dropped into its window's column.
+        base_y = -2.7
+        w_u = 0.035  # scene units per watt
+        col_x = [col_x0 + (w + 0.5) * win_w for w in range(FRAME_WINDOWS)]
+        baseline = Line(RIGHT * col_x0 + UP * base_y, RIGHT * (col_x0 + bar_w) + UP * base_y, color=MUTED)
+        yt = VGroup(*[label(f"{p:.0f} W", 14, MUTED).move_to(RIGHT * (col_x0 - 0.45) + UP * (base_y + p * w_u)) for p in (0, 20, 40)])
+        stack_lab = label("total per window", 16, MUTED).move_to(RIGHT * (col_x0 - 0.2) + UP * (base_y + 40 * w_u + 0.3), aligned_edge=RIGHT)
+        self.play(Create(baseline), FadeIn(yt), FadeIn(stack_lab), run_time=0.5)
+        cap = self.caption("Per window, the powers add.")
+
+        heights = [0.0] * FRAME_WINDOWS
+        totals = VGroup(*[label("0", 14, MUTED).move_to(RIGHT * col_x[w] + UP * (base_y - 0.2)) for w in range(FRAME_WINDOWS)])
         self.add(totals)
 
         def total_text(w, color=None):
-            n = heights[w]
-            col = color or (RED if n > cap_lines else INK)
-            return label(f"{n * HEATER_A:.1f} A", 14, col).move_to(totals[w])
+            col = color or (RED if heights[w] > budget_w + 1e-9 else INK)
+            return label(f"{heights[w]:.1f}", 14, col).move_to(totals[w])
 
-        def add_row(r, m):
-            anims = [grid[r][w].animate.set_fill(colors[r] if (m >> w) & 1 else CELL, 1) for w in range(FRAME_WINDOWS)]
-            new_blocks = VGroup()
+        def stack_blocks(row, mask):
+            """Blocks for one lane, stacked on whatever is already in each column."""
+            g = VGroup()
             for w in range(FRAME_WINDOWS):
-                if (m >> w) & 1:
-                    b = Rectangle(width=0.54, height=HEATER_A * amp_u, fill_color=colors[r], fill_opacity=0.85, stroke_width=0)
-                    b.move_to(RIGHT * col_x[w] + UP * (base_y + heights[w] * HEATER_A * amp_u), aligned_edge=DOWN)
-                    heights[w] += 1
-                    new_blocks.add(b)
-            blocks.add(new_blocks)
-            anims += [FadeIn(new_blocks, shift=UP * 0.15)]
-            anims += [Transform(totals[w], total_text(w, INK)) for w in range(FRAME_WINDOWS)]
-            return anims
+                if (mask >> w) & 1:
+                    b = Rectangle(width=win_w - 0.06, height=watts[row] * w_u, fill_color=colors[row], fill_opacity=0.85, stroke_width=0)
+                    b.move_to(RIGHT * col_x[w] + UP * (base_y + heights[w] * w_u), aligned_edge=DOWN)
+                    heights[w] += watts[row]
+                    g.add(b)
+            return g
 
-        for r in range(len(names)):
-            self.play(*add_row(r, naive[r]), run_time=0.55)
-            self.wait(0.15)
+        blocks = VGroup()
+        for i in range(n):
+            new_blocks = stack_blocks(i, naive[i])
+            blocks.add(new_blocks)
+            self.play(*[TransformFromCopy(src, dst) for src, dst in zip(lanes[i], new_blocks)],
+                      *[Transform(totals[w], total_text(w, INK)) for w in range(FRAME_WINDOWS)], run_time=0.5)
         self.wait(0.8)
 
         # The budget, as a line the stack must stay under.
-        ceiling_a = budget_w / SUPPLY_V
-        ceiling = DashedLine(RIGHT * (col_x[0] - 0.4) + UP * (base_y + ceiling_a * amp_u), RIGHT * (col_x[-1] + 0.4) + UP * (base_y + ceiling_a * amp_u), color=RED)
-        ceiling_lab = label(f"{budget_w:.0f} W supply budget = {ceiling_a:.1f} A", 16, RED).next_to(ceiling, RIGHT, buff=0.15)
+        ceiling = DashedLine(RIGHT * col_x0 + UP * (base_y + budget_w * w_u), RIGHT * (col_x0 + bar_w) + UP * (base_y + budget_w * w_u), color=RED)
+        ceiling_lab = label(f"{budget_w:.0f} W supply budget", 16, RED).next_to(ceiling, UP, buff=0.08).align_to(ceiling, RIGHT)
         self.play(Create(ceiling), FadeIn(ceiling_lab), run_time=0.6)
-        over = [w for w in range(FRAME_WINDOWS) if heights[w] > cap_lines]
+        over = [w for w in range(FRAME_WINDOWS) if heights[w] > budget_w]
         self.play(*[Transform(totals[w], total_text(w)) for w in over], run_time=0.4)
-        self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption(f"All starting at window 0: {heights[0] * HEATER_A:.1f} A, {heights[0] * HEATER_W:.0f} W, in one window.")
+        cap = self.caption(f"All starting at window 0: {heights[0]:.1f} W in one window.")
         self.wait(2.8)
-        cap = self.caption("The loop knows each channel: 13 Ω, 0.9 A, 10.6 W.")
-        self.wait(2.5)
-        self.play(FadeOut(cap), run_time=0.2)
-        rule = label(f"{budget_w:.0f} W ÷ {HEATER_W} W = {budget_w / HEATER_W:.2f}  →  at most {cap_lines} lines per window", 22, WHITE).move_to(UP * 0.05)
-        self.play(FadeIn(rule), run_time=0.5)
-        self.wait(2.5)
+        cap = self.caption(f"{budget_w:.0f} W ÷ {HEATER_W} W (biggest line) = {budget_w / HEATER_W:.2f} → at most {cap_lines} lines per window", 22, WHITE)
+        self.wait(3.0)
 
         # Reflow under the cap: same windows per heater, spread across the frame.
         masks, _, _ = schedule_frame(requests, cap_lines, rotate=0)
-        self.play(FadeOut(blocks), run_time=0.4)
-        heights = [0] * FRAME_WINDOWS
+        new_lanes = [static_lane(i, masks[i]) for i in range(n)]
+        self.play(FadeOut(blocks), *[FadeOut(l) for l in lanes], *[FadeIn(l) for l in new_lanes], run_time=0.6)
+        heights = [0.0] * FRAME_WINDOWS
         blocks = VGroup()
         anims = []
-        for r in range(len(names)):
-            anims += add_row(r, masks[r])
-        self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption(f"Same windows, spread out: never above {cap_lines} lines.")
+        for i in range(n):
+            new_blocks = stack_blocks(i, masks[i])
+            blocks.add(new_blocks)
+            anims += [TransformFromCopy(src, dst) for src, dst in zip(new_lanes[i], new_blocks)]
+        anims += [Transform(totals[w], total_text(w)) for w in range(FRAME_WINDOWS)]
+        cap = self.caption(f"Same windows, spread out: never above {budget_w:.0f} W.")
         self.play(*anims, run_time=1.2)
         self.wait(2.5)
         cap = self.caption("Module limit 125 W; the bench supply sets 40 W.")

@@ -98,16 +98,19 @@ Walks the window-mask heater loop that `pm_mask_loop` runs on the NSV-502 person
 module, in the order the data flows every 500 ms frame:
 
 1. The frame: eight 62.5 ms windows, one mask bit per window per heater line, staged any
-   time and latched at window 0.
-2. RTD to PI: temperature error to duty percentage, with conditional integration at the rails.
-3. Duty to windows with a balance: the part of a window a heater is owed or was granted
+   time and latched at window 0, drawn as the current waveform of one line.
+2. Many channels: each line's on/off sequence scaled to its own power (the loop knows every
+   resistance), summed per window into the supply's power envelope, and the line cap that
+   keeps that envelope under the budget.
+3. RTD to PI: temperature error to duty percentage, with conditional integration at the rails.
+4. Duty to windows with a balance: the part of a window a heater is owed or was granted
    early is carried into the next frame and the request rounds at half a window, so 30 %
    really is 2.4 windows on average and the balance stays within half a window either way.
-4. Scheduling under a power cap: whole windows placed round-robin into the least-loaded
+5. Scheduling under a power cap: whole windows placed round-robin into the least-loaded
    window, never above the cap of lines per window, rotated frame to frame.
-5. Clipping and integrator pause: when the cap grants less than asked, the integrator holds
+6. Clipping and integrator pause: when the cap grants less than asked, the integrator holds
    instead of counting error the heater was never allowed to act on.
-6. The closed loop.
+7. The closed loop.
 
 The control math is a direct port of the `heater-schedule` crate in `tracking-test-bench`,
 so the numbers on screen are the ones the hardware loop produces. No LaTeX is needed for
