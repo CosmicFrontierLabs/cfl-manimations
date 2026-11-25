@@ -37,6 +37,7 @@ from manim import (
     RIGHT,
     UP,
     WHITE,
+    AnimationGroup,
     Arrow,
     Axes,
     Create,
@@ -546,20 +547,20 @@ class ThermalControl(Scene):
         cap = self.caption(f"{budget_w:.0f} W ÷ {HEATER_W} W (biggest line) = {budget_w / HEATER_W:.2f} → at most {cap_lines} lines per window", 22, WHITE)
         self.wait(3.0)
 
-        # Reflow under the cap: same windows per heater, spread across the frame.
+        # Reflow under the cap: the same windows per heater slide across the
+        # frame, and each block in the total moves with its step.
         masks, _, _ = schedule_frame(requests, cap_lines, rotate=0)
-        new_lanes = [static_lane(i, masks[i]) for i in range(n)]
-        self.play(FadeOut(blocks), *[FadeOut(l) for l in lanes], *[FadeIn(l) for l in new_lanes], run_time=0.6)
+        assert all(bin(m).count("1") == r for m, r in zip(masks, requests))
         heights = [0.0] * FRAME_WINDOWS
-        blocks = VGroup()
-        anims = []
+        moves = []
         for i in range(n):
             new_blocks = stack_blocks(i, masks[i])
-            blocks.add(new_blocks)
-            anims += [TransformFromCopy(src, dst) for src, dst in zip(new_lanes[i], new_blocks)]
-        anims += [Transform(totals[w], total_text(w)) for w in range(FRAME_WINDOWS)]
+            row_moves = [Transform(src, dst) for src, dst in zip(lanes[i], static_lane(i, masks[i]))]
+            row_moves += [Transform(src, dst) for src, dst in zip(blocks[i], new_blocks)]
+            moves.append(AnimationGroup(*row_moves))
         cap = self.caption(f"Same windows, spread out: never above {budget_w:.0f} W.")
-        self.play(*anims, run_time=1.2)
+        self.play(AnimationGroup(*moves, lag_ratio=0.25), run_time=3.0)
+        self.play(*[Transform(totals[w], total_text(w)) for w in range(FRAME_WINDOWS)], run_time=0.3)
         self.wait(2.5)
         cap = self.caption("Module limit 125 W; the bench supply sets 40 W.")
         self.wait(2.5)
