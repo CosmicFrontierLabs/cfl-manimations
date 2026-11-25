@@ -7,7 +7,7 @@ The scene walks the loop in the order the data flows every 500 ms frame:
 1. The frame: eight 62.5 ms windows, one mask bit per window per heater line,
    staged any time and latched at window 0.
 2. RTD to PI: a proportional-integral law turns the temperature error into a
-   duty percentage, with conditional integration at the rails.
+   duty percentage, with the integral term bounded to the actuator range.
 3. Duty to windows with a balance: the part of a window a heater is owed or
    was granted early is carried into the next frame and the request rounds at
    half a window, so a duty between two eighths is delivered on average and
@@ -89,15 +89,12 @@ HEATER_W = 10.6
 def pi_duty(error_c, kp, ki, integrator, dt_s):
     """One PI step. Returns (duty_pct, integrator).
 
-    The integrator only keeps a step that does not push an already saturated
-    output further into its rail (conditional integration)."""
+    The integrator always accumulates and is bounded so its own term spans
+    0 to 100 % of duty, the actuator range."""
     proportional = kp * error_c
-    stepped = integrator + error_c * dt_s
-    unclamped = proportional + ki * stepped
-    if (unclamped > 100.0 and error_c > 0.0) or (unclamped < 0.0 and error_c < 0.0):
-        integrator = integrator
-    else:
-        integrator = stepped
+    integrator = integrator + error_c * dt_s
+    if ki > 0.0:
+        integrator = min(max(integrator, 0.0), 100.0 / ki)
     duty = min(100.0, max(0.0, proportional + ki * integrator))
     return duty, integrator
 
@@ -621,11 +618,11 @@ class ThermalControl(Scene):
         curve = always_redraw(lambda: axes.plot_line_graph(t[: max(2, int(k_tr.get_value()))], temp[: max(2, int(k_tr.get_value()))], add_vertex_dots=False, line_color=GREEN, stroke_width=3))
         dot = always_redraw(lambda: axes.plot_line_graph([t[int(k_tr.get_value())]], [temp[int(k_tr.get_value())]], vertex_dot_radius=0.07, vertex_dot_style={"fill_color": GREEN}))
         self.add(curve, dot)
-        cap = self.caption("Far below setpoint: 100 %, integrator frozen.")
+        cap = self.caption("Far below setpoint: 100 %. I fills to its 100 % limit.")
         n = len(t)
         self.play(k_tr.animate.set_value(int(n * 0.42)), run_time=5.0, rate_func=rate_functions.linear)
         self.play(FadeOut(cap), run_time=0.2)
-        cap = self.caption("Inside the band the integrator carries the load.")
+        cap = self.caption("P fades near setpoint; I carries the load, then unwinds.")
         self.play(k_tr.animate.set_value(n - 1), run_time=7.0, rate_func=rate_functions.linear)
         self.wait(1.0)
         self.play(FadeOut(cap), run_time=0.2)
@@ -892,7 +889,7 @@ class ThermalControl(Scene):
 
         axis_cfg = {"include_numbers": True, "font_size": 18, "color": MUTED, "label_constructor": ui_text, "decimal_number_config": {"num_decimal_places": 0}}
         ax_t = Axes(x_range=[0, minutes, 20], y_range=[20, 50, 10], x_length=6.0, y_length=2.9, axis_config=axis_cfg)
-        ax_i = Axes(x_range=[0, minutes, 20], y_range=[0, 80, 20], x_length=6.0, y_length=2.9, axis_config=axis_cfg)
+        ax_i = Axes(x_range=[0, minutes, 20], y_range=[0, 100, 25], x_length=6.0, y_length=2.9, axis_config=axis_cfg)
         ax_t.to_edge(LEFT, buff=0.8).shift(DOWN * 0.9)
         ax_i.to_edge(RIGHT, buff=0.8).shift(DOWN * 0.9)
         t_lab = label("RTD °C", 18, MUTED).next_to(ax_t, UP, buff=0.1).align_to(ax_t, LEFT)

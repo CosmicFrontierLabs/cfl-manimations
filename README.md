@@ -102,7 +102,8 @@ module, in the order the data flows every 500 ms frame:
 2. Many channels: each line's on/off sequence scaled to its own power (the loop knows every
    resistance), summed per window into the supply's power envelope, and the line cap that
    keeps that envelope under the budget.
-3. RTD to PI: temperature error to duty percentage, with conditional integration at the rails.
+3. RTD to PI: temperature error to duty percentage, with the integral term bounded to
+   the actuator range.
 4. Duty to windows with a balance: the part of a window a heater is owed or was granted
    early is carried into the next frame and the request rounds at half a window, so 30 %
    really is 2.4 windows on average and the balance stays within half a window either way.
