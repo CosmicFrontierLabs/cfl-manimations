@@ -8,9 +8,10 @@ The scene walks the loop in the order the data flows every 500 ms frame:
    staged any time and latched at window 0.
 2. RTD to PI: a proportional-integral law turns the temperature error into a
    duty percentage, with conditional integration at the rails.
-3. Duty to windows with carry: the fraction of a window a heater is owed but
-   not granted is carried into the next frame, so a duty between two eighths
-   is delivered on average and the deficit never reaches a whole window.
+3. Duty to windows with a balance: the part of a window a heater is owed or
+   was granted early is carried into the next frame and the request rounds at
+   half a window, so a duty between two eighths is delivered on average and
+   the balance never exceeds half a window either way.
 4. Scheduling under a power cap: whole windows are placed round-robin into
    the least-loaded window, never exceeding the cap of lines per window.
 5. Clipping and integrator pause: when the cap grants fewer windows than
@@ -18,7 +19,7 @@ The scene walks the loop in the order the data flows every 500 ms frame:
 6. The closed loop.
 
 The control math here is a direct port of the heater-schedule crate in
-tracking-test-bench (windows_with_carry, schedule_frame, pi_duty,
+tracking-test-bench (windows_with_balance, schedule_frame, pi_duty,
 pi_duty_under_budget), so the numbers on screen are the ones the hardware
 loop would produce.
 """
@@ -109,15 +110,17 @@ def pi_duty_under_budget(error_c, kp, ki, integrator, dt_s, clipped_last_frame):
     return duty, new_integrator
 
 
-def windows_with_carry(duty_pct, carry):
-    """Whole windows to request this frame, and the fraction to carry."""
-    # Snap binary-float noise so that 2.4 + 0.6 floors to 3 like the 3.0 it is.
-    owed = round(duty_pct / 100.0 * FRAME_WINDOWS + carry, 9)
-    windows = min(int(math.floor(owed)), FRAME_WINDOWS)
+def windows_with_balance(duty_pct, balance):
+    """Whole windows to request this frame, and the signed balance left over:
+    positive is owed to the heater, negative was granted early. Rounds at half
+    a window, so the balance stays in [-0.5, 0.5)."""
+    # Snap binary-float noise so that 2.4 + 0.1 rounds like the 2.5 it is.
+    owed = round(duty_pct / 100.0 * FRAME_WINDOWS + balance, 9)
+    windows = min(max(int(math.floor(owed + 0.5)), 0), FRAME_WINDOWS)
     if duty_pct >= 100.0:
         remainder = 0.0
     else:
-        remainder = min(max(owed - windows, 0.0), 1.0 - 1e-12)
+        remainder = min(max(owed - windows, -0.5), 0.5 - 1e-12)
     return windows, remainder
 
 
@@ -257,7 +260,7 @@ class ThermalControl(Scene):
         self.section_frame()
         self.section_currents()
         self.section_pi()
-        self.section_carry()
+        self.section_balance()
         self.section_schedule()
         self.section_clip()
         self.section_loop()
@@ -580,22 +583,28 @@ class ThermalControl(Scene):
         self.wait(2.5)
         self.clear_all()
 
-    # -- 3. duty -> windows with carry --------------------------------------
+    # -- 4. duty -> windows with a balance ------------------------------------
 
-    def strip(self, lit, w=0.3, h=0.28, gap=0.04, leftover=0.0):
-        """One frame's eight windows as a small strip with the first `lit` on,
-        and the leftover part of a window drawn in purple inside the next cell."""
+    def strip(self, lit, w=0.3, h=0.28, gap=0.04, balance=0.0):
+        """One frame's eight windows as a small strip with the first `lit` on.
+        A positive balance (owed) is drawn in purple at the start of the next
+        cell; a negative one (granted ahead) in teal at the end of the last lit
+        cell."""
         cells = cell_grid(1, FRAME_WINDOWS, w=w, h=h, gap=gap)[0]
         for i, cell in enumerate(cells):
             cell.set_fill(ORANGE if i < lit else CELL, 1)
         group = VGroup(*cells)
-        if leftover > 0 and lit < FRAME_WINDOWS:
-            part = Rectangle(width=max(1e-3, leftover * w), height=h * 0.7, fill_color=PURPLE, fill_opacity=0.9, stroke_width=0)
+        if balance > 0 and lit < FRAME_WINDOWS:
+            part = Rectangle(width=max(1e-3, balance * w), height=h * 0.7, fill_color=PURPLE, fill_opacity=0.9, stroke_width=0)
             part.move_to(cells[lit].get_left(), aligned_edge=LEFT)
+            group.add(part)
+        elif balance < 0 and lit > 0:
+            part = Rectangle(width=max(1e-3, -balance * w), height=h * 0.7, fill_color=TEAL, fill_opacity=0.9, stroke_width=0)
+            part.move_to(cells[lit - 1].get_right(), aligned_edge=RIGHT)
             group.add(part)
         return group
 
-    def section_carry(self):
+    def section_balance(self):
         head = self.heading("4. Duty → windows: the deficit ledger")
         duty = 30.0
 
@@ -621,18 +630,20 @@ class ThermalControl(Scene):
         self.wait(2.0)
         self.play(FadeOut(q), FadeOut(naive), FadeOut(tally), run_time=0.5)
 
-        # -- C. the leftover, drawn as part of a window inside the strip ---------------
-        rule = label("carry the leftover into the next frame", 26, GREEN).move_to(UP * 1.75)
+        # -- C. the balance, drawn as part of a window inside the strip ----------------
+        rule = label("carry the balance into the next frame", 26, GREEN).move_to(UP * 1.75)
         self.play(FadeIn(rule), FadeOut(cap), run_time=0.5)
         self.wait(0.8)
         self.play(FadeOut(intro), rule.animate.next_to(head, DOWN, buff=0.3), run_time=0.5)
+        cap = self.caption("At least half a window owed: switch it on now.")
 
         cw, ch, gap = 0.62, 0.34, 0.05
         pitch = cw + gap
         x0 = -4.3  # left edge of every strip
         legend = VGroup(
             VGroup(Rectangle(width=0.3, height=0.2, fill_color=ORANGE, fill_opacity=1, stroke_width=0), label("on", 14, INK)).arrange(RIGHT, buff=0.1),
-            VGroup(Rectangle(width=0.3, height=0.2, fill_color=PURPLE, fill_opacity=0.9, stroke_width=0), label("left over", 14, INK)).arrange(RIGHT, buff=0.1),
+            VGroup(Rectangle(width=0.3, height=0.2, fill_color=PURPLE, fill_opacity=0.9, stroke_width=0), label("owed", 14, INK)).arrange(RIGHT, buff=0.1),
+            VGroup(Rectangle(width=0.3, height=0.2, fill_color=TEAL, fill_opacity=0.9, stroke_width=0), label("ahead", 14, INK)).arrange(RIGHT, buff=0.1),
         ).arrange(RIGHT, buff=0.5).move_to(UP * 1.4 + RIGHT * 0.3)
         self.play(FadeIn(legend), run_time=0.3)
 
@@ -643,48 +654,66 @@ class ThermalControl(Scene):
             rect.move_to(RIGHT * (x0 + start * pitch) + UP * y, aligned_edge=LEFT)
             return rect
 
-        carry = 0.0
+        balance = 0.0
         total = 0
         tail = None
+        per_frame = duty / 100 * FRAME_WINDOWS
         for f in range(6):
-            windows, new_carry = windows_with_carry(duty, carry)
-            owed = round(duty / 100 * 8 + carry, 9)
+            windows, new_balance = windows_with_balance(duty, balance)
+            owed = round(per_frame + balance, 9)
             y = 0.9 - f * 0.47
             cells = cell_grid(1, FRAME_WINDOWS, w=cw, h=ch, gap=gap)[0]
             strip = VGroup(*cells).move_to(UP * y).align_to(RIGHT * x0, LEFT)
             flab = label(f"frame {f + 1}", 16, MUTED).next_to(strip, LEFT, buff=0.25)
             self.play(FadeIn(strip), FadeIn(flab), run_time=0.25)
-            # The leftover slides down from the end of the last strip to the start of
-            # this one, leaving a faint mark behind so every row still shows its own.
+            # The balance slides down from the last strip, leaving a faint mark
+            # behind: owed part first, then the new 2.4; a part granted ahead is
+            # paid back out of the end of the new 2.4.
             carried = None
-            if carry > 0 and tail is not None:
+            if balance > 0 and tail is not None:
                 carried = tail.copy()
                 self.add(carried)
-                self.play(Transform(carried, span(y, 0.0, carry, PURPLE)), tail.animate.set_opacity(0.35), run_time=0.5)
-            # This frame's 2.4 windows are added after it.
-            fresh = span(y, carry, carry + 1e-3, ORANGE)
+                self.play(Transform(carried, span(y, 0.0, balance, PURPLE)), tail.animate.set_opacity(0.35), run_time=0.5)
+            start = max(balance, 0.0)
+            fresh = span(y, start, start + 1e-3, ORANGE)
             self.add(fresh)
-            self.play(Transform(fresh, span(y, carry, owed, ORANGE)), run_time=0.6)
+            self.play(Transform(fresh, span(y, start, start + per_frame, ORANGE)), run_time=0.6)
+            if balance < 0 and tail is not None:
+                carried = tail.copy()
+                self.add(carried)
+                self.play(Transform(carried, span(y, owed, per_frame, TEAL)), tail.animate.set_opacity(0.35), run_time=0.5)
             self.wait(0.2)
-            # Whole windows switch on; whatever is left of a window stays purple.
+            # Round to the nearest window: whole windows switch on; the rest of the
+            # account stays purple (owed) or teal (granted ahead).
             snap = [cells[w].animate.set_fill(ORANGE, 1) for w in range(windows)]
-            new_tail = span(y, windows, owed, PURPLE) if new_carry > 0 else None
+            if new_balance > 0:
+                new_tail = span(y, windows, owed, PURPLE)
+            elif new_balance < 0:
+                new_tail = span(y, owed, windows, TEAL)
+            else:
+                new_tail = None
             fades = [FadeOut(fresh)] + ([FadeOut(carried)] if carried is not None else [])
             shows = [FadeIn(new_tail)] if new_tail is not None else []
             total += windows
-            words = VGroup(label(f"{windows} on", 18, ORANGE), label(f"{new_carry:.1f} left" if new_carry > 0 else "0 left", 16, PURPLE)).arrange(RIGHT, buff=0.25)
+            if new_balance > 0:
+                note = label(f"{new_balance:.1f} owed", 16, PURPLE)
+            elif new_balance < 0:
+                note = label(f"{-new_balance:.1f} ahead", 16, TEAL)
+            else:
+                note = label("even", 16, MUTED)
+            words = VGroup(label(f"{windows} on", 18, ORANGE), note).arrange(RIGHT, buff=0.25)
             words.next_to(strip, RIGHT, buff=0.3)
             self.play(*snap, *fades, *shows, FadeIn(words), run_time=0.5)
             tail = new_tail
             if f == 1:
-                cap = self.caption("2.8 owed: two on, 0.8 waits.", color=PURPLE)
-                self.wait(1.2)
-            if f == 2:
-                cap = self.caption("3.2 owed: three on, 0.2 waits.", color=PURPLE)
+                cap = self.caption("2.8 owed: over half, so three on; 0.2 ahead.", color=TEAL)
                 self.wait(1.4)
-            carry = new_carry
+            if f == 2:
+                cap = self.caption("2.2 owed: two on, 0.2 owed.", color=PURPLE)
+                self.wait(1.2)
+            balance = new_balance
         self.wait(0.6)
-        cap = self.caption("The leftover is never a whole window.", color=GREEN)
+        cap = self.caption("The balance never exceeds half a window either way.", color=GREEN)
         self.wait(2.0)
         cap = self.caption("Five frames: 12 on for 12.0 asked. Exactly 30 %.")
         self.wait(2.5)
@@ -693,8 +722,8 @@ class ThermalControl(Scene):
 
         # -- D. the rules that keep it bounded, one line at a time --------------------
         for line in (
-            "One ledger per heater line.",
-            "It only ever holds part of a window.",
+            "One balance per heater line.",
+            "It never exceeds half a window either way.",
             "Clipped windows are not banked; the PI handles those.",
         ):
             rule_line = label(line, 30, WHITE).move_to(UP * 0.3)
@@ -705,19 +734,19 @@ class ThermalControl(Scene):
         # -- E. a low duty still gets delivered ----------------------------------------
         low = label("10 %: 0.8 windows per frame", 26, WHITE).next_to(head, DOWN, buff=0.4)
         self.play(FadeIn(low), run_time=0.5)
-        carry, got = 0.0, []
+        balance, got = 0.0, []
         strips = VGroup()
         ledger = VGroup()
         for f in range(10):
-            windows, carry = windows_with_carry(10.0, carry)
+            windows, balance = windows_with_balance(10.0, balance)
             got.append(windows)
-            s = self.strip(windows, w=0.13, h=0.26, gap=0.02, leftover=carry).move_to(RIGHT * (-5.4 + f * 1.2) + UP * 0.6)
+            s = self.strip(windows, w=0.13, h=0.26, gap=0.02, balance=balance).move_to(RIGHT * (-5.4 + f * 1.2) + UP * 0.6)
             fl = label(f"{f + 1}", 14, MUTED).next_to(s, UP, buff=0.08)
-            c = label(f"{carry:.1f}", 16, PURPLE).next_to(s, DOWN, buff=0.1)
+            c = label(f"{balance:+.1f}", 16, PURPLE if balance > 0 else (TEAL if balance < 0 else MUTED)).next_to(s, DOWN, buff=0.1)
             strips.add(VGroup(s, fl))
             ledger.add(c)
             self.play(FadeIn(strips[-1]), FadeIn(c), run_time=0.22)
-        lab = label("left over", 16, PURPLE).next_to(ledger, DOWN, buff=0.15)
+        lab = label("balance", 16, MUTED).next_to(ledger, DOWN, buff=0.15)
         result = label(f"{sum(got)} windows in 10 frames: {sum(got) / 80 * 100:g} %", 26, GREEN).move_to(DOWN * 1.4)
         self.play(FadeIn(lab), run_time=0.3)
         self.play(FadeIn(result), run_time=0.5)
@@ -868,7 +897,7 @@ class ThermalControl(Scene):
         steps = [
             ("RTD read", "sweep frame, °C per lane", GREEN),
             ("PI per group", "error → duty %", BLUE),
-            ("carry quantiser", "duty → whole windows", PURPLE),
+            ("window balance", "duty → whole windows", PURPLE),
             ("scheduler", "cap, rotation → masks", TEAL),
             ("window masks", "staged, latched at w0", ORANGE),
             ("heaters", "62.5 ms slots of 10.6 W", RED),
@@ -902,7 +931,7 @@ class ThermalControl(Scene):
         # One heater, one frame, with real numbers, one line at a time.
         cap = self.caption("pwr11: RTD 44.6 °C, error 0.4 °C, duty 18 %.", color=BLUE)
         self.wait(2.2)
-        cap = self.caption("1.44 windows + 0.60 left over: 2 on, 0.04 left.", color=PURPLE)
+        cap = self.caption("1.44 windows + 0.30 owed: 2 on, 0.26 ahead.", color=PURPLE)
         self.wait(2.2)
         cap = self.caption("Two emptiest windows → mask 0b00100001.", color=ORANGE)
         self.wait(2.5)
